@@ -1,26 +1,14 @@
 name: thesis-fedrec
 
 channels:
-  - pytorch
-  - nvidia
   - conda-forge
 
 dependencies:
-  - python=3.10
+  - python=3.11.16
   - pip
-  - pytorch=2.4.1
-  - torchvision=0.19.1
-  - torchaudio=2.4.1
-  - pytorch-cuda=12.1
-  - numpy=1.26
-  - pandas=2.2
-  - scipy=1.13
-  - scikit-learn=1.5
-  - pyyaml=6.0
-  - tqdm
-  - tensorboard
-  - networkx
-  - pytest
+  - numpy=1.26.4
+  - pyyaml=6.0.3
+  - pytest=8.4.2
   - pip:
-      - torch-geometric==2.6.1
-      - rich==13.9.4
+      - --extra-index-url https://download.pytorch.org/whl/cu126
+      - torch==2.7.1+cu126
