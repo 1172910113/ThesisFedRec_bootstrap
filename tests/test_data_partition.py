@@ -16,6 +16,22 @@ def _assert_party_interactions_match_users(
     )
     interaction_users = np.unique(bundle.interactions.user_ids[interaction_ids])
     np.testing.assert_array_equal(interaction_users, party.user_ids)
+    interaction_items = np.unique(bundle.interactions.item_ids[interaction_ids])
+    np.testing.assert_array_equal(interaction_items, party.item_ids)
+
+
+def _assert_partition_covers_splits(
+    bundle: DatasetBundle, parties: tuple[PartyData, ...]
+) -> None:
+    for split_name in ("train", "valid", "test"):
+        assigned = np.concatenate(
+            [
+                getattr(party, f"{split_name}_interaction_ids")
+                for party in parties
+            ]
+        )
+        expected = getattr(bundle.splits, f"{split_name}_interaction_ids")
+        np.testing.assert_array_equal(np.sort(assigned), expected)
 
 
 def test_per_user_hfl_mapping_is_stable_and_seed_independent(
@@ -59,6 +75,7 @@ def test_per_user_hfl_mapping_is_stable_and_seed_independent(
 
     for party in first:
         _assert_party_interactions_match_users(processed_bundle, party)
+    _assert_partition_covers_splits(processed_bundle, first)
 
 
 def test_grouped_round_robin_is_deterministic_and_keeps_users_intact(
@@ -99,3 +116,4 @@ def test_grouped_round_robin_is_deterministic_and_keeps_users_intact(
         np.sort(assigned_users),
         np.arange(len(processed_bundle.user_id_map), dtype=np.int64),
     )
+    _assert_partition_covers_splits(processed_bundle, first)

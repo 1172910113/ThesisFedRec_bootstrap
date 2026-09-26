@@ -68,6 +68,15 @@ def test_preprocessing_is_deterministic_and_ids_are_contiguous(
         first.interactions.values,
         np.ones(12, dtype=np.float32),
     )
+    for split_name in (
+        "train_interaction_ids",
+        "valid_interaction_ids",
+        "test_interaction_ids",
+    ):
+        np.testing.assert_array_equal(
+            getattr(first.splits, split_name),
+            getattr(second.splits, split_name),
+        )
 
 
 def test_minimum_filtering_and_duplicate_policy(
@@ -85,6 +94,58 @@ def test_minimum_filtering_and_duplicate_policy(
     )
     assert rows.tolist() == [6]
     assert bundle.interactions.timestamps[rows[0]] == 2
+
+    user_item_pairs = np.stack(
+        (bundle.interactions.user_ids, bundle.interactions.item_ids), axis=1
+    )
+    assert len(np.unique(user_item_pairs, axis=0)) == len(bundle.interactions)
+
+
+def test_duplicate_filter_is_rechecked_before_mapping(tmp_path: Path) -> None:
+    ratings_path = tmp_path / "ratings.dat"
+    ratings_path.write_text(
+        "\n".join(
+            (
+                "10::100::5::1",
+                "10::100::4::2",
+                "10::101::3::3",
+                "20::200::5::1",
+                "20::201::4::2",
+                "20::202::3::3",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = preprocess_ml1m(ratings_path)
+
+    assert bundle.user_id_map == {20: 0}
+    assert bundle.item_id_map == {200: 0, 201: 1, 202: 2}
+    assert len(bundle.interactions) == 3
+
+
+def test_duplicate_timestamp_tie_keeps_later_source_record(
+    tmp_path: Path,
+) -> None:
+    ratings_path = tmp_path / "ratings.dat"
+    ratings_path.write_text(
+        "\n".join(
+            (
+                "10::100::5::1",
+                "10::101::4::2",
+                "10::100::3::1",
+                "10::102::2::3",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    bundle = preprocess_ml1m(ratings_path)
+
+    assert bundle.item_id_map == {101: 0, 100: 1, 102: 2}
+    assert bundle.interactions.timestamps.tolist() == [2, 1, 3]
 
 
 def test_leave_one_out_uses_interaction_id_to_break_timestamp_ties(
