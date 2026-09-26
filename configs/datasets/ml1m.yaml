@@ -1,0 +1,9 @@
+dataset:
+  name: ml1m
+  task: implicit
+  split: leave_one_out_temporal
+  min_interactions: 3
+
+negative_sampling:
+  train_ratio: 4
+  strategy: uniform

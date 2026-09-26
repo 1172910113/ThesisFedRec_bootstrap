@@ -1,0 +1,13 @@
+method:
+  name: fedavg
+
+federation:
+  type: hfl
+  rounds: 20
+  client_fraction: 1.0
+  local_epochs: 2
+
+evaluation:
+  metrics:
+    - HR@10
+    - NDCG@10
