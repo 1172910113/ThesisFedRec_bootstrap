@@ -1,9 +1,30 @@
+data:
+  root_env: THESISFEDREC_DATA_ROOT
+  fallback_root: data/raw
+
 dataset:
   name: ml1m
+  ratings_path: ml-1m/ml-1m/ratings.dat
   task: implicit
-  split: leave_one_out_temporal
-  min_interactions: 3
+
+preprocessing:
+  seed: 2026
+  min_interactions_per_user: 3
+  duplicate_policy: keep_latest
+  implicit_feedback: all_observed
+  canonical_order: source_order
+
+split:
+  strategy: leave_one_out_temporal
+  tie_breaker: interaction_id
+
+hfl:
+  mode: per_user
 
 negative_sampling:
   train_ratio: 4
   strategy: uniform
+  excluded_splits:
+    - train
+    - valid
+    - test
