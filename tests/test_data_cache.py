@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from src.data.cache import load_base_cache, save_base_cache
 from src.data.contracts import DatasetBundle
@@ -58,3 +59,16 @@ def test_base_cache_round_trip(
         (cache_path / "manifest.json").read_text(encoding="utf-8")
     )
     assert stored_manifest == manifest
+
+
+def test_base_cache_rejects_modified_artifact(
+    processed_bundle: DatasetBundle, tmp_path: Path
+) -> None:
+    cache_path = tmp_path / "processed"
+    save_base_cache(processed_bundle, cache_path)
+
+    interactions_path = cache_path / "base" / "interactions.npz"
+    interactions_path.write_bytes(interactions_path.read_bytes() + b"corrupt")
+
+    with pytest.raises(ValueError, match="cache checksum mismatch"):
+        load_base_cache(cache_path)
