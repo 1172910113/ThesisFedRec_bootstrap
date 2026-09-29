@@ -68,7 +68,9 @@ def sample_negative_items(
                 known_items,
                 assume_unique=True,
             )
+        positive_item_id = int(bundle.interactions.item_ids[interaction_id])
         eligible = eligible_by_user[user_id]
+        eligible = eligible[eligible != positive_item_id]
         if not replace and negatives_per_positive > eligible.size:
             raise ValueError(
                 f"user {user_id} has only {eligible.size} eligible negative items"
