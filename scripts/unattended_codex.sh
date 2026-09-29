@@ -6,7 +6,7 @@ CONDA_SH="/home/yuanhaochen/miniconda3/etc/profile.d/conda.sh"
 CODEX="/home/yuanhaochen/.local/bin/codex"
 
 # 7-day hard stop.
-STOP_AT="2026-10-06 13:00:00 +0800"
+STOP_AT="2026-10-09 13:00:00 +0800"
 
 LOG_DIR="$PROJECT/logs/unattended"
 LOCK_FILE="/tmp/thesisfedrec_codex.lock"
