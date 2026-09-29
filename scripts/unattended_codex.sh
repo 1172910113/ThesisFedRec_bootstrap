@@ -6,7 +6,7 @@ CONDA_SH="/home/yuanhaochen/miniconda3/etc/profile.d/conda.sh"
 CODEX="/home/yuanhaochen/.local/bin/codex"
 
 # 7-day hard stop.
-STOP_AT="2026-10-09 13:00:00 +0800"
+STOP_AT="2026-10-06 13:00:00 +0800"
 
 LOG_DIR="$PROJECT/logs/unattended"
 LOCK_FILE="/tmp/thesisfedrec_codex.lock"
@@ -52,7 +52,19 @@ if [[ -n "$(git status --porcelain)" ]]; then
     exit 1
 fi
 
-git fetch origin
+# Skip this run if GitHub DNS is temporarily unavailable.
+if ! getent hosts github.com >/dev/null 2>&1; then
+    echo "$(date -Is) WARNING: github.com DNS resolution failed; skipping run" \
+        >> "$LOG_DIR/scheduler.log"
+    exit 0
+fi
+
+# Skip this run on temporary Git/network failure.
+if ! git fetch origin; then
+    echo "$(date -Is) WARNING: git fetch failed; skipping run" \
+        >> "$LOG_DIR/scheduler.log"
+    exit 0
+fi
 
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="$LOG_DIR/run_${TIMESTAMP}.log"
@@ -61,11 +73,10 @@ echo "$(date -Is) starting unattended Codex run" \
     >> "$LOG_DIR/scheduler.log"
 
 # Limit one invocation so a hung task cannot occupy the server forever.
+EXIT_CODE=0
 timeout 4h \
     "$CODEX" exec "$(cat docs/UNATTENDED_PROMPT.md)" \
     > "$LOG_FILE" 2>&1 || EXIT_CODE=$?
-
-EXIT_CODE=${EXIT_CODE:-0}
 
 echo "$(date -Is) Codex run finished with code $EXIT_CODE; log=$LOG_FILE" \
     >> "$LOG_DIR/scheduler.log"
