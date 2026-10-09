@@ -7,7 +7,12 @@ from typing import Any
 
 import numpy as np
 
-from src.data.contracts import DatasetBundle, InteractionSplits, InteractionTable
+from src.data.contracts import (
+    SCHEMA_VERSION,
+    DatasetBundle,
+    InteractionSplits,
+    InteractionTable,
+)
 
 _REQUIRED_METADATA_KEYS = (
     "raw_ratings_sha256",
@@ -141,6 +146,13 @@ def load_base_cache(cache_directory: str | Path) -> DatasetBundle:
     manifest_path = cache_path / "manifest.json"
     with manifest_path.open(encoding="utf-8") as manifest_file:
         manifest = json.load(manifest_file)
+
+    cache_schema_version = manifest.get("schema_version")
+    if cache_schema_version != SCHEMA_VERSION:
+        raise ValueError(
+            "unsupported cache schema version: "
+            f"{cache_schema_version!r}; expected {SCHEMA_VERSION!r}"
+        )
 
     for relative_path, expected_checksum in manifest[
         "artifact_checksums"

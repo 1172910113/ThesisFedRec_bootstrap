@@ -6,12 +6,9 @@ from typing import Any
 
 import numpy as np
 
-from src.data.contracts import DatasetBundle, InteractionTable
+from src.data.contracts import SCHEMA_VERSION, DatasetBundle, InteractionTable
 from src.data.loaders import load_ml1m_ratings, resolve_data_path
 from src.data.split import leave_one_out_split
-
-SCHEMA_VERSION = "1.0"
-
 
 def _sha256_file(path: Path) -> str:
     digest = hashlib.sha256()

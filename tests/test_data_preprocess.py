@@ -173,3 +173,28 @@ def test_leave_one_out_uses_interaction_id_to_break_timestamp_ties(
     ]
     assert sorted(valid_users.tolist()) == list(range(4))
     assert sorted(test_users.tolist()) == list(range(4))
+
+
+def test_leave_one_out_matches_temporal_order_for_every_user(
+    ml1m_ratings_file: Path,
+) -> None:
+    bundle = preprocess_ml1m(ml1m_ratings_file)
+    train_ids = set(bundle.splits.train_interaction_ids.tolist())
+    valid_ids = set(bundle.splits.valid_interaction_ids.tolist())
+    test_ids = set(bundle.splits.test_interaction_ids.tolist())
+
+    for user_id in range(len(bundle.user_id_map)):
+        user_interaction_ids = np.flatnonzero(
+            bundle.interactions.user_ids == user_id
+        ).tolist()
+        ordered_ids = sorted(
+            user_interaction_ids,
+            key=lambda interaction_id: (
+                int(bundle.interactions.timestamps[interaction_id]),
+                interaction_id,
+            ),
+        )
+
+        assert set(ordered_ids[:-2]) == train_ids.intersection(ordered_ids)
+        assert ordered_ids[-2] in valid_ids
+        assert ordered_ids[-1] in test_ids

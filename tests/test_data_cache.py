@@ -72,3 +72,21 @@ def test_base_cache_rejects_modified_artifact(
 
     with pytest.raises(ValueError, match="cache checksum mismatch"):
         load_base_cache(cache_path)
+
+
+def test_base_cache_rejects_unsupported_schema_version(
+    processed_bundle: DatasetBundle, tmp_path: Path
+) -> None:
+    cache_path = tmp_path / "processed"
+    save_base_cache(processed_bundle, cache_path)
+
+    manifest_path = cache_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = "999.0"
+    manifest_path.write_text(
+        json.dumps(manifest, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="unsupported cache schema version"):
+        load_base_cache(cache_path)

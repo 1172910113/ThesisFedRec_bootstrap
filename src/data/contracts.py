@@ -8,6 +8,7 @@ import numpy as np
 RawId = str | int
 Metadata = dict[str, Any]
 PartitionKind = Literal["none", "hfl", "vfl", "hyfl"]
+SCHEMA_VERSION = "1.0"
 
 
 def _validate_int_array(name: str, values: np.ndarray) -> None:
