@@ -136,21 +136,21 @@ def initialize_fedgmf_shared_state(
     generator = _torch_generator(run_seed, _SHARED_INIT_STREAM)
 
     item_embeddings = torch.empty(num_items, embedding_dim)
-    nn.init.normal_(item_embeddings, generator=generator)
+    nn.init.normal_(
+        item_embeddings,
+        mean=0.0,
+        std=0.01,
+        generator=generator,
+    )
     prediction_weight = torch.empty(1, embedding_dim)
-    nn.init.kaiming_uniform_(
-        prediction_weight,
-        a=sqrt(5),
-        generator=generator,
-    )
-    prediction_bias = torch.empty(1)
-    bound = 1 / sqrt(embedding_dim)
+    weight_bound = sqrt(3.0 / embedding_dim)
     nn.init.uniform_(
-        prediction_bias,
-        -bound,
-        bound,
+        prediction_weight,
+        -weight_bound,
+        weight_bound,
         generator=generator,
     )
+    prediction_bias = torch.zeros(1)
     return {
         ITEM_EMBEDDINGS_KEY: item_embeddings,
         PREDICTION_WEIGHT_KEY: prediction_weight,
@@ -177,7 +177,12 @@ def initialize_fedgmf_local_state(
 
     generator = _torch_generator(run_seed, _LOCAL_INIT_STREAM, party_id)
     user_embeddings = torch.empty(owned_user_ids.numel(), embedding_dim)
-    nn.init.normal_(user_embeddings, generator=generator)
+    nn.init.normal_(
+        user_embeddings,
+        mean=0.0,
+        std=0.01,
+        generator=generator,
+    )
     return FedGMFLocalState(
         user_ids=owned_user_ids,
         user_embeddings=user_embeddings,
@@ -200,8 +205,10 @@ def score_fedgmf(
     if not users.numel():
         raise ValueError("at least one user/item pair is required")
 
-    num_items, embedding_dim, _ = _validate_shared_state(shared_state)
-    _validate_local_dimension(local_state, embedding_dim)
+    num_items, embedding_dim, shared_dtype = _validate_shared_state(
+        shared_state
+    )
+    _validate_local_compatibility(local_state, embedding_dim, shared_dtype)
     if torch.any(items >= num_items).item():
         raise ValueError("item_ids contain an out-of-range processed item ID")
     local_rows = local_state.row_indices(users)
@@ -244,10 +251,12 @@ def train_local_fedgmf(
     _positive_number("learning_rate", learning_rate)
     _nonnegative_number("weight_decay", weight_decay)
 
-    num_items, embedding_dim, _ = _validate_shared_state(shared_state)
+    num_items, embedding_dim, shared_dtype = _validate_shared_state(
+        shared_state
+    )
     if num_items != len(bundle.item_id_map):
         raise ValueError("shared item state does not match the dataset item count")
-    _validate_local_dimension(local_state, embedding_dim)
+    _validate_local_compatibility(local_state, embedding_dim, shared_dtype)
     positive_ids = _validate_party_training_data(bundle, party, local_state)
 
     selected_device = torch.device(device)
@@ -351,14 +360,20 @@ def _validate_shared_state(
     return int(num_items), int(embedding_dim), items.dtype
 
 
-def _validate_local_dimension(
+def _validate_local_compatibility(
     local_state: FedGMFLocalState,
     embedding_dim: int,
+    shared_dtype: torch.dtype,
 ) -> None:
     if not isinstance(local_state, FedGMFLocalState):
         raise TypeError("local_state must be a FedGMFLocalState")
     if local_state.user_embeddings.shape[1] != embedding_dim:
         raise ValueError("local and shared embedding dimensions do not match")
+    if local_state.user_embeddings.dtype != shared_dtype:
+        raise TypeError(
+            "local user embeddings and shared FedGMF tensors must use "
+            "the same floating dtype"
+        )
 
 
 def _validate_party_training_data(

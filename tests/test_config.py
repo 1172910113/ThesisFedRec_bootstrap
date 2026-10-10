@@ -51,6 +51,7 @@ def test_reference_phase3_config_loads_and_validates() -> None:
     }
     assert config["model"]["name"] == "fedgmf"
     assert config["model"]["embedding_dim"] == 8
+    assert config["model"]["initialization"] == "ncf_gmf"
     assert config["optimization"]["train_negative_resampling"] == (
         "per_local_epoch"
     )
@@ -63,6 +64,18 @@ def test_missing_required_scientific_field_fails() -> None:
 
     with pytest.raises(ValueError, match="optimization.*learning_rate"):
         validate_phase3_experiment_config(config)
+
+
+def test_model_initialization_protocol_is_required_and_frozen() -> None:
+    missing = _reference_config()
+    del missing["model"]["initialization"]
+    with pytest.raises(ValueError, match="model.*initialization"):
+        validate_phase3_experiment_config(missing)
+
+    unsupported = _reference_config()
+    unsupported["model"]["initialization"] = "framework_default"
+    with pytest.raises(ValueError, match="model.initialization"):
+        validate_phase3_experiment_config(unsupported)
 
 
 def test_unknown_top_level_section_fails() -> None:

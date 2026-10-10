@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from math import sqrt
 
 import numpy as np
 import pytest
@@ -140,9 +141,51 @@ def test_initialization_is_deterministic_and_separates_state() -> None:
     assert all("user" not in key for key in first_shared)
     for key in FEDGMF_SHARED_KEYS:
         assert torch.equal(first_shared[key], second_shared[key])
+
+    shared_seed = int(
+        np.random.SeedSequence([9, 0x53485244]).generate_state(
+            1, dtype=np.uint64
+        )[0]
+    )
+    shared_generator = torch.Generator(device="cpu")
+    shared_generator.manual_seed(shared_seed)
+    expected_items = torch.empty(11, 5)
+    torch.nn.init.normal_(
+        expected_items,
+        mean=0.0,
+        std=0.01,
+        generator=shared_generator,
+    )
+    expected_weight = torch.empty(1, 5)
+    weight_bound = sqrt(3.0 / 5)
+    torch.nn.init.uniform_(
+        expected_weight,
+        -weight_bound,
+        weight_bound,
+        generator=shared_generator,
+    )
+    assert torch.equal(first_shared["item_embeddings"], expected_items)
+    assert torch.equal(first_shared["prediction_weight"], expected_weight)
+    assert torch.equal(first_shared["prediction_bias"], torch.zeros(1))
+
+    local_seed = int(
+        np.random.SeedSequence([9, 0x4C4F4341, 41]).generate_state(
+            1, dtype=np.uint64
+        )[0]
+    )
+    local_generator = torch.Generator(device="cpu")
+    local_generator.manual_seed(local_seed)
+    expected_users = torch.empty(2, 5)
+    torch.nn.init.normal_(
+        expected_users,
+        mean=0.0,
+        std=0.01,
+        generator=local_generator,
+    )
     assert torch.equal(first_local.user_ids, torch.tensor([2, 8]))
     assert torch.equal(first_local.user_ids, second_local.user_ids)
     assert torch.equal(first_local.user_embeddings, second_local.user_embeddings)
+    assert torch.equal(first_local.user_embeddings, expected_users)
     assert not torch.equal(
         first_local.user_embeddings[0], first_local.user_embeddings[1]
     )
@@ -157,6 +200,22 @@ def test_score_rejects_user_not_owned_by_party() -> None:
 
     with pytest.raises(ValueError, match="does not own user IDs"):
         score_fedgmf(shared_state, local_state, [99], [0])
+
+
+def test_score_and_training_reject_local_shared_dtype_mismatch(
+    processed_bundle: DatasetBundle,
+) -> None:
+    party = _grouped_party(processed_bundle)
+    shared_state, local_state = _initial_states(processed_bundle, party)
+    mismatched_local = FedGMFLocalState(
+        user_ids=local_state.user_ids.clone(),
+        user_embeddings=local_state.user_embeddings.double(),
+    )
+
+    with pytest.raises(TypeError, match="same floating dtype"):
+        score_fedgmf(shared_state, mismatched_local, [0], [0])
+    with pytest.raises(TypeError, match="same floating dtype"):
+        _train(processed_bundle, party, shared_state, mismatched_local)
 
 
 def test_grouped_party_training_updates_only_returned_states(

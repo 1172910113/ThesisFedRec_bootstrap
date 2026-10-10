@@ -25,6 +25,7 @@ federation:
 model:
   name: fedgmf
   embedding_dim: 8
+  initialization: ncf_gmf
   user_embedding_scope: party_local
   item_embedding_scope: federated
   prediction_layer_scope: federated

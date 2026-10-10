@@ -202,6 +202,7 @@ def _validate_model(section: dict[str, Any]) -> None:
     required = {
         "name",
         "embedding_dim",
+        "initialization",
         "user_embedding_scope",
         "item_embedding_scope",
         "prediction_layer_scope",
@@ -209,6 +210,7 @@ def _validate_model(section: dict[str, Any]) -> None:
     _validate_keys(section, "model", required=required)
     _require_enum(section, "name", "model", {"fedgmf"})
     _require_int(section, "embedding_dim", "model", minimum=1)
+    _require_enum(section, "initialization", "model", {"ncf_gmf"})
     _require_enum(
         section,
         "user_embedding_scope",

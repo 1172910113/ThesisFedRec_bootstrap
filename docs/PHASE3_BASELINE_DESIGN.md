@@ -268,6 +268,20 @@ The server-owned/federated state contains only:
 - the GMF prediction-layer weight;
 - the GMF prediction-layer bias.
 
+The frozen `ncf_gmf` initialization protocol is:
+
+- party-local user embeddings use `Normal(mean=0, std=0.01)`;
+- federated item embeddings use `Normal(mean=0, std=0.01)`;
+- the prediction weight uses LeCun uniform, implemented for its
+  `(1, embedding_dim)` shape as
+  `Uniform(-sqrt(3 / embedding_dim), sqrt(3 / embedding_dim))`;
+- the prediction bias is exactly zero.
+
+Shared and party-local initialization use their existing explicit deterministic
+seed streams. No initialization depends on global framework RNG state or party
+iteration order. Persistent local user embeddings and all shared tensors use
+the same floating dtype.
+
 Each party owns a persistent FedGMF local state containing only the user
 embeddings for the processed user IDs assigned to that party. The minimum
 representation is a FedGMF-specific value such as:
@@ -505,6 +519,7 @@ model:
   name: fedncf_fedgmf
   architecture: gmf
   embedding_dim: 8
+  initialization: ncf_gmf
   user_embedding_scope: party_local
   item_embedding_scope: federated
   prediction_layer_scope: federated
@@ -547,8 +562,9 @@ cache in cache mode.
 
 The values in this YAML are the frozen Phase 3 reference semantics, not
 placeholders: 20 rounds, full participation, one local epoch, FedGMF with
-8-dimensional embeddings, Adam at `0.001`, batch size 256, zero weight
-decay, four training negatives per positive, and 99 evaluation negatives.
+8-dimensional embeddings and `ncf_gmf` initialization, Adam at `0.001`, batch
+size 256, zero weight decay, four training negatives per positive, and 99
+evaluation negatives.
 Partial participation and other local-epoch counts remain supported
 infrastructure but define a different run configuration.
 
