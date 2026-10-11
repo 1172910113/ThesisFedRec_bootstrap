@@ -1,9 +1,81 @@
-"""Small deterministic helpers for horizontal federation."""
+"""Deterministic selection and synchronous horizontal-federation rounds."""
 
-from collections.abc import Sequence
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from math import ceil, isfinite
+from typing import Generic, TypeVar
 
 import numpy as np
+import torch
+
+from src.data.contracts import PartyData
+from src.federation.fedavg import ClientUpdate, aggregate_fedavg
+
+LocalStateT = TypeVar("LocalStateT")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class HFLRoundResult(Generic[LocalStateT]):
+    """The state transition and minimal bookkeeping from one HFL round."""
+
+    next_shared_state: dict[str, torch.Tensor]
+    local_states: dict[int, LocalStateT]
+    selected_party_ids: tuple[int, ...]
+    total_positive_interactions: int
+
+
+def run_synchronous_hfl_round(
+    shared_state: Mapping[str, torch.Tensor],
+    parties: Sequence[PartyData],
+    local_states: Mapping[int, LocalStateT],
+    *,
+    client_fraction: float,
+    run_seed: int,
+    round_index: int,
+    local_update: Callable[
+        [Mapping[str, torch.Tensor], LocalStateT, PartyData],
+        tuple[LocalStateT, ClientUpdate],
+    ],
+) -> HFLRoundResult[LocalStateT]:
+    """Run one synchronous HFL selection, local-update, and FedAvg step."""
+    parties_by_id = _parties_by_id(parties)
+    _validate_local_state_keys(local_states, parties_by_id)
+    selected_party_ids = select_party_ids(
+        tuple(parties_by_id),
+        client_fraction=client_fraction,
+        run_seed=run_seed,
+        round_index=round_index,
+    )
+
+    next_local_states = dict(local_states)
+    client_updates: list[ClientUpdate] = []
+    for party_id in selected_party_ids:
+        updated_local_state, client_update = local_update(
+            shared_state,
+            local_states[party_id],
+            parties_by_id[party_id],
+        )
+        if not isinstance(client_update, ClientUpdate):
+            raise TypeError("local_update must return a ClientUpdate")
+        if client_update.party_id != party_id:
+            raise ValueError(
+                f"party {party_id} local update returned ClientUpdate for "
+                f"party {client_update.party_id}"
+            )
+        next_local_states[party_id] = updated_local_state
+        client_updates.append(client_update)
+
+    next_shared_state = aggregate_fedavg(shared_state, client_updates)
+    return HFLRoundResult(
+        next_shared_state=next_shared_state,
+        local_states=next_local_states,
+        selected_party_ids=selected_party_ids,
+        total_positive_interactions=sum(
+            update.num_positive_interactions for update in client_updates
+        ),
+    )
 
 
 def select_party_ids(
@@ -31,6 +103,44 @@ def select_party_ids(
         replace=False,
     )
     return tuple(sorted(party_ids[int(index)] for index in selected_indices))
+
+
+def _parties_by_id(parties: Sequence[PartyData]) -> dict[int, PartyData]:
+    result: dict[int, PartyData] = {}
+    for party in parties:
+        if not isinstance(party, PartyData):
+            raise TypeError("parties must contain PartyData values")
+        if party.party_id in result:
+            raise ValueError("parties must not contain duplicate party IDs")
+        result[party.party_id] = party
+    if not result:
+        raise ValueError("parties must not be empty")
+    return result
+
+
+def _validate_local_state_keys(
+    local_states: Mapping[int, LocalStateT],
+    parties_by_id: Mapping[int, PartyData],
+) -> None:
+    if not isinstance(local_states, Mapping):
+        raise TypeError("local_states must be a mapping")
+    if any(
+        isinstance(party_id, bool)
+        or not isinstance(party_id, (int, np.integer))
+        or party_id < 0
+        for party_id in local_states
+    ):
+        raise ValueError("local_states keys must be non-negative party IDs")
+
+    expected = set(parties_by_id)
+    provided = {int(party_id) for party_id in local_states}
+    if provided != expected:
+        missing = sorted(expected - provided)
+        extra = sorted(provided - expected)
+        raise ValueError(
+            "local_states keys must exactly match available party IDs; "
+            f"missing={missing}, extra={extra}"
+        )
 
 
 def _party_ids(available_party_ids: Sequence[int]) -> tuple[int, ...]:
