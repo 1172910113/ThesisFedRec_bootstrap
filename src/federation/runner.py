@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
 import torch
 
+from src.data.cache import load_base_cache
 from src.data.contracts import DatasetBundle, PartyData
+from src.data.partition import build_hfl_partition
+from src.data.preprocess import preprocess_ml1m_from_root
 from src.evaluation.ranking import (
     EvaluationCandidateSet,
     build_evaluation_candidates,
@@ -23,6 +31,13 @@ from src.models.fedgmf import (
     initialize_fedgmf_shared_state,
     score_fedgmf,
     train_local_fedgmf,
+)
+from src.utils.logging import get_logger
+from src.utils.results import (
+    build_partition_metadata,
+    collect_runtime_metadata,
+    create_run_directory,
+    write_result_artifacts,
 )
 from src.utils.seed import set_random_seed
 
@@ -49,6 +64,122 @@ class FedGMFHFLRunResult:
     test_candidates: EvaluationCandidateSet
     round_summaries: tuple[FedGMFHFLRoundSummary, ...]
     final_test_metrics: dict[str, MetricValue]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Phase3ExperimentExecutionResult:
+    """Completed in-memory result and its written artifact directory."""
+
+    run_directory: Path
+    experiment_result: FedGMFHFLRunResult
+    partition_metadata: dict[str, Any]
+    runtime_metadata: dict[str, Any]
+
+
+def execute_phase3_experiment(
+    config: Mapping[str, Any],
+) -> Phase3ExperimentExecutionResult:
+    """Resolve data and partition, execute Phase 3, and write artifacts."""
+    start_utc = datetime.now(timezone.utc)
+    start_time = perf_counter()
+    runtime = config["runtime"]
+    experiment_name = config["experiment"]["name"]
+    run_directory = create_run_directory(
+        runtime["results_root"],
+        experiment_name,
+        run_seed=runtime["seed"],
+    )
+    logger = get_logger("thesisfedrec.experiment")
+    file_handler = logging.FileHandler(
+        run_directory / "run.log",
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(
+        logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(name)s | %(message)s"
+        )
+    )
+    logger.addHandler(file_handler)
+
+    try:
+        logger.info("configuration loaded: %s", experiment_name)
+        bundle, dataset_identity = _resolve_ml1m_dataset(config)
+        logger.info(
+            "dataset resolved: %s (%d users, %d items, %d interactions)",
+            bundle.name,
+            len(bundle.user_id_map),
+            len(bundle.item_id_map),
+            len(bundle.interactions),
+        )
+
+        parties, partition_seed = _build_configured_hfl_partition(
+            bundle,
+            config,
+        )
+        partition_metadata = build_partition_metadata(
+            parties,
+            federation_type=config["federation"]["type"],
+            partition_mode=config["federation"]["partition"],
+            partition_seed=partition_seed,
+            base_data_identity=dataset_identity,
+        )
+        logger.info(
+            "partition created: %s (%d parties, seed %d)",
+            config["federation"]["partition"],
+            len(parties),
+            partition_seed,
+        )
+        logger.info("run started")
+        experiment_result = run_fedgmf_hfl_experiment(
+            bundle,
+            parties,
+            config,
+        )
+        for summary in experiment_result.round_summaries:
+            logger.info(
+                "round %d complete: parties=%s validation=%s",
+                summary.round_index,
+                summary.selected_party_ids,
+                summary.validation_metrics,
+            )
+        logger.info(
+            "final validation=%s test=%s",
+            experiment_result.round_summaries[-1].validation_metrics,
+            experiment_result.final_test_metrics,
+        )
+
+        end_utc = datetime.now(timezone.utc)
+        runtime_metadata = collect_runtime_metadata(
+            start_utc=start_utc,
+            end_utc=end_utc,
+            duration_seconds=perf_counter() - start_time,
+            configured_device=runtime["device"],
+            run_seed=runtime["seed"],
+            dataset_identity=dataset_identity,
+            partition_checksum=partition_metadata[
+                "assignment_checksum"
+            ],
+        )
+        write_result_artifacts(
+            run_directory,
+            config=config,
+            result=experiment_result,
+            partition_metadata=partition_metadata,
+            runtime_metadata=runtime_metadata,
+        )
+        logger.info("artifact directory: %s", run_directory)
+        return Phase3ExperimentExecutionResult(
+            run_directory=run_directory,
+            experiment_result=experiment_result,
+            partition_metadata=partition_metadata,
+            runtime_metadata=runtime_metadata,
+        )
+    except Exception:
+        logger.exception("experiment failed")
+        raise
+    finally:
+        logger.removeHandler(file_handler)
+        file_handler.close()
 
 
 def run_fedgmf_hfl_experiment(
@@ -272,3 +403,124 @@ def _fedgmf_score_function(
         return scores
 
     return score
+
+
+def _resolve_ml1m_dataset(
+    config: Mapping[str, Any],
+) -> tuple[DatasetBundle, dict[str, Any]]:
+    dataset = config["dataset"]
+    runtime = config["runtime"]
+    input_mode = dataset["input"]
+    if input_mode == "raw":
+        bundle = preprocess_ml1m_from_root(
+            dataset["ratings_path"],
+            min_interactions_per_user=dataset[
+                "min_interactions_per_user"
+            ],
+            duplicate_policy=dataset["duplicate_policy"],
+            implicit_feedback=dataset["implicit_feedback"],
+            seed=runtime["seed"],
+        )
+        cache_manifest_sha256 = None
+        cache_path = None
+    elif input_mode == "cache":
+        cache_path = Path(dataset["cache_path"])
+        bundle = load_base_cache(cache_path)
+        cache_manifest_sha256 = _sha256_file(cache_path / "manifest.json")
+    else:
+        raise ValueError(f"unsupported dataset input mode: {input_mode}")
+
+    _validate_dataset_semantics(bundle, dataset)
+    identity: dict[str, Any] = {
+        "input_mode": input_mode,
+        "dataset_name": bundle.name,
+        "schema_version": bundle.schema_version,
+        "raw_ratings_reference": bundle.metadata.get(
+            "raw_ratings_reference"
+        ),
+        "raw_ratings_sha256": bundle.metadata["raw_ratings_sha256"],
+    }
+    if cache_path is not None:
+        identity["cache_path"] = cache_path.as_posix()
+        identity["cache_manifest_sha256"] = cache_manifest_sha256
+    return bundle, identity
+
+
+def _validate_dataset_semantics(
+    bundle: DatasetBundle,
+    dataset: Mapping[str, Any],
+) -> None:
+    if bundle.name != dataset["name"]:
+        raise ValueError(
+            f"dataset name mismatch: expected {dataset['name']!r}, "
+            f"found {bundle.name!r}"
+        )
+    actual_checksum = bundle.metadata.get("raw_ratings_sha256")
+    if actual_checksum != dataset["expected_raw_sha256"]:
+        raise ValueError("dataset raw SHA-256 does not match configuration")
+
+    preprocessing = bundle.metadata.get("preprocessing_configuration", {})
+    expected_preprocessing = {
+        "min_interactions_per_user": dataset[
+            "min_interactions_per_user"
+        ],
+        "duplicate_policy": dataset["duplicate_policy"],
+        "implicit_feedback": dataset["implicit_feedback"],
+        "canonical_order": dataset["canonical_order"],
+    }
+    for key, expected in expected_preprocessing.items():
+        if preprocessing.get(key) != expected:
+            raise ValueError(
+                f"dataset preprocessing setting {key!r} does not match "
+                "configuration"
+            )
+
+    split_policy = bundle.metadata.get("split_policy", {})
+    if split_policy.get("strategy") != dataset["split"]:
+        raise ValueError("dataset split policy does not match configuration")
+    if split_policy.get("order") != ["timestamp", dataset["tie_breaker"]]:
+        raise ValueError("dataset split tie-breaker does not match configuration")
+
+
+def _build_configured_hfl_partition(
+    bundle: DatasetBundle,
+    config: Mapping[str, Any],
+) -> tuple[tuple[PartyData, ...], int]:
+    federation = config["federation"]
+    partition_mode = federation["partition"]
+    partition_seed = config["runtime"]["seed"]
+    num_parties = (
+        federation["num_parties"]
+        if partition_mode == "grouped_round_robin"
+        else None
+    )
+    parties = build_hfl_partition(
+        bundle,
+        mode=partition_mode,
+        num_parties=num_parties,
+        seed=partition_seed,
+    )
+
+    if any(
+        party.metadata.get("hfl_mode") != partition_mode
+        for party in parties
+    ):
+        raise ValueError("constructed HFL partition mode does not match config")
+    if partition_mode == "per_user":
+        if len(parties) != len(bundle.user_id_map) or any(
+            party.user_ids.size != 1 for party in parties
+        ):
+            raise ValueError("per_user partition does not match configuration")
+    elif len(parties) != num_parties:
+        raise ValueError(
+            "grouped_round_robin party count does not match configuration"
+        )
+    return parties, partition_seed
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for block in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
