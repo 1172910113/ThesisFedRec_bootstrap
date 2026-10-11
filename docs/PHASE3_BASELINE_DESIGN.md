@@ -610,7 +610,8 @@ The existing protocol's core files keep their documented meanings:
   HR@10/NDCG@10, elapsed seconds, and separate download/upload/total bytes;
 - `runtime.json`: start/end times, duration, Python/PyTorch/CUDA versions,
   selected device/GPU, dataset/cache manifest checksum, git commit and dirty
-  flag, and best-effort reproducibility qualification;
+  flag captured at experiment launch before any run artifacts are created,
+  and best-effort reproducibility qualification;
 - `run.log`: the existing logger's human-readable progress;
 - `checkpoint.pt`: when enabled, a versioned simulator snapshot containing
   the server shared FedGMF state, every `party_id -> FedGMFLocalState`,

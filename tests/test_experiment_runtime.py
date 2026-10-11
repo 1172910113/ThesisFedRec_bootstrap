@@ -263,6 +263,95 @@ def test_high_level_executor_uses_per_user_partition(
     )
 
 
+def test_git_provenance_is_captured_before_run_artifacts(
+    processed_bundle: DatasetBundle,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results_root = tmp_path / "results"
+    config = _config(results_root, grouped_parties=None)
+    events: list[str] = []
+    git_state = {"dirty": False, "calls": 0}
+    real_create_run_directory = runner_module.create_run_directory
+
+    def fake_capture_git_identity() -> tuple[str, bool]:
+        assert not results_root.exists()
+        git_state["calls"] += 1
+        if git_state["calls"] != 1:
+            pytest.fail("Git identity must only be captured at launch")
+        events.append("git_identity")
+        return "launch-commit", git_state["dirty"]
+
+    def tracked_create_run_directory(
+        results_root: str | Path,
+        experiment_name: str,
+        *,
+        run_seed: int,
+    ) -> Path:
+        assert events == ["git_identity"]
+        run_directory = real_create_run_directory(
+            results_root,
+            experiment_name,
+            run_seed=run_seed,
+        )
+        (run_directory / "experiment-created.txt").write_text(
+            "created after provenance capture\n",
+            encoding="utf-8",
+        )
+        git_state["dirty"] = True
+        events.append("run_directory")
+        return run_directory
+
+    monkeypatch.setattr(
+        runner_module,
+        "capture_git_identity",
+        fake_capture_git_identity,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "create_run_directory",
+        tracked_create_run_directory,
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "_resolve_ml1m_dataset",
+        lambda _: (processed_bundle, {"dataset_name": "ml1m"}),
+    )
+    monkeypatch.setattr(
+        runner_module,
+        "run_fedgmf_hfl_experiment",
+        lambda _, parties, executed_config: _fake_result(
+            parties,
+            executed_config["federation"]["rounds"],
+        ),
+    )
+
+    def unavailable_cuda() -> bool:
+        raise RuntimeError("CUDA runtime unavailable")
+
+    monkeypatch.setattr(
+        results_module.torch.cuda,
+        "is_available",
+        unavailable_cuda,
+    )
+
+    execution = execute_phase3_experiment(config)
+    stored_runtime = json.loads(
+        (execution.run_directory / "runtime.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert events == ["git_identity", "run_directory"]
+    assert git_state == {"dirty": True, "calls": 1}
+    assert stored_runtime["git_commit"] == "launch-commit"
+    assert stored_runtime["git_dirty"] is False
+    assert stored_runtime["git_state_captured_at"] == "experiment_launch"
+    assert stored_runtime["configured_device"] == "cpu"
+    assert stored_runtime["cuda_available"] is False
+    assert stored_runtime["selected_device_name"] is None
+
+
 def test_cache_mode_loads_only_the_exact_configured_cache(
     processed_bundle: DatasetBundle,
     tmp_path: Path,

@@ -35,6 +35,7 @@ from src.models.fedgmf import (
 from src.utils.logging import get_logger
 from src.utils.results import (
     build_partition_metadata,
+    capture_git_identity,
     collect_runtime_metadata,
     create_run_directory,
     write_result_artifacts,
@@ -80,6 +81,7 @@ def execute_phase3_experiment(
     config: Mapping[str, Any],
 ) -> Phase3ExperimentExecutionResult:
     """Resolve data and partition, execute Phase 3, and write artifacts."""
+    git_commit, git_dirty = capture_git_identity()
     start_utc = datetime.now(timezone.utc)
     start_time = perf_counter()
     runtime = config["runtime"]
@@ -159,6 +161,8 @@ def execute_phase3_experiment(
             partition_checksum=partition_metadata[
                 "assignment_checksum"
             ],
+            git_commit=git_commit,
+            git_dirty=git_dirty,
         )
         write_result_artifacts(
             run_directory,

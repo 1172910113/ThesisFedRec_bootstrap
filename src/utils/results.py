@@ -137,6 +137,28 @@ def build_partition_metadata(
     }
 
 
+def capture_git_identity() -> tuple[str | None, bool | None]:
+    """Return the current repository commit and dirty flag."""
+    repository_root = Path(__file__).resolve().parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None, None
+    return commit, bool(status.strip())
+
 def collect_runtime_metadata(
     *,
     start_utc: datetime,
@@ -146,6 +168,8 @@ def collect_runtime_metadata(
     run_seed: int,
     dataset_identity: Mapping[str, Any],
     partition_checksum: str,
+    git_commit: str | None,
+    git_dirty: bool | None,
 ) -> dict[str, Any]:
     """Collect non-scientific runtime and reproducibility facts."""
     try:
@@ -161,7 +185,6 @@ def collect_runtime_metadata(
         except (AssertionError, RuntimeError, ValueError):
             device_name = None
 
-    git_commit, git_dirty = _git_identity()
     return {
         "start_utc": start_utc.astimezone(timezone.utc).isoformat(),
         "end_utc": end_utc.astimezone(timezone.utc).isoformat(),
@@ -174,6 +197,7 @@ def collect_runtime_metadata(
         "run_seed": run_seed,
         "git_commit": git_commit,
         "git_dirty": git_dirty,
+        "git_state_captured_at": "experiment_launch",
         "dataset_identity": dict(dataset_identity),
         "partition_checksum": partition_checksum,
         "reproducibility_note": (
@@ -309,25 +333,3 @@ def _write_text(path: Path, content: str) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(content, encoding="utf-8")
     temporary.replace(path)
-
-
-def _git_identity() -> tuple[str | None, bool | None]:
-    repository_root = Path(__file__).resolve().parents[2]
-    try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repository_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        status = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=repository_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError):
-        return None, None
-    return commit, bool(status.strip())
