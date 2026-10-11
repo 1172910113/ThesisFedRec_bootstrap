@@ -107,6 +107,78 @@ def test_full_round_is_synchronous_ordered_weighted_and_immutable() -> None:
     assert torch.equal(shared_state["weight"], original_shared)
 
 
+def test_client_shared_state_mutation_is_isolated() -> None:
+    parties = (_party(9, 1), _party(3, 0))
+    shared_state = {
+        "weight": torch.tensor([4.0, -2.0]),
+        "step": torch.tensor([7], dtype=torch.int64),
+    }
+    original_shared = {
+        key: tensor.clone() for key, tensor in shared_state.items()
+    }
+    local_states = {3: "local-3", 9: "local-9"}
+    received_shared: dict[int, dict[str, torch.Tensor]] = {}
+    returned_weights = {
+        3: torch.tensor([2.0, 4.0]),
+        9: torch.tensor([8.0, 10.0]),
+    }
+    aggregation_weights = {3: 1, 9: 3}
+
+    def local_update(
+        current_shared: Mapping[str, torch.Tensor],
+        local_state: str,
+        party: PartyData,
+    ) -> tuple[str, ClientUpdate]:
+        received_shared[party.party_id] = {
+            key: tensor.clone() for key, tensor in current_shared.items()
+        }
+        if party.party_id == 3:
+            current_shared["weight"].add_(100.0)
+            current_shared["step"].fill_(99)
+        return (
+            f"{local_state}:updated",
+            ClientUpdate(
+                party_id=party.party_id,
+                shared_state={
+                    "weight": returned_weights[party.party_id],
+                    "step": original_shared["step"].clone(),
+                },
+                num_positive_interactions=(
+                    aggregation_weights[party.party_id]
+                ),
+            ),
+        )
+
+    result = run_synchronous_hfl_round(
+        shared_state,
+        parties,
+        local_states,
+        client_fraction=1.0,
+        run_seed=2026,
+        round_index=0,
+        local_update=local_update,
+    )
+
+    assert result.selected_party_ids == (3, 9)
+    for party_id in result.selected_party_ids:
+        assert all(
+            torch.equal(received_shared[party_id][key], tensor)
+            for key, tensor in original_shared.items()
+        )
+    assert all(
+        torch.equal(shared_state[key], tensor)
+        for key, tensor in original_shared.items()
+    )
+    expected_weight = (
+        returned_weights[3] * aggregation_weights[3]
+        + returned_weights[9] * aggregation_weights[9]
+    ) / sum(aggregation_weights.values())
+    torch.testing.assert_close(
+        result.next_shared_state["weight"], expected_weight
+    )
+    assert torch.equal(result.next_shared_state["step"], original_shared["step"])
+
+
 def test_partial_round_replaces_only_selected_states_and_reproduces() -> None:
     party_ids = (101, 7, 44, 900, 12)
     parties = tuple(

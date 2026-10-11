@@ -40,6 +40,7 @@ def run_synchronous_hfl_round(
     ],
 ) -> HFLRoundResult[LocalStateT]:
     """Run one synchronous HFL selection, local-update, and FedAvg step."""
+    round_start_shared_state = _clone_shared_state(shared_state)
     parties_by_id = _parties_by_id(parties)
     _validate_local_state_keys(local_states, parties_by_id)
     selected_party_ids = select_party_ids(
@@ -53,7 +54,7 @@ def run_synchronous_hfl_round(
     client_updates: list[ClientUpdate] = []
     for party_id in selected_party_ids:
         updated_local_state, client_update = local_update(
-            shared_state,
+            _clone_shared_state(round_start_shared_state),
             local_states[party_id],
             parties_by_id[party_id],
         )
@@ -67,7 +68,10 @@ def run_synchronous_hfl_round(
         next_local_states[party_id] = updated_local_state
         client_updates.append(client_update)
 
-    next_shared_state = aggregate_fedavg(shared_state, client_updates)
+    next_shared_state = aggregate_fedavg(
+        round_start_shared_state,
+        client_updates,
+    )
     return HFLRoundResult(
         next_shared_state=next_shared_state,
         local_states=next_local_states,
@@ -76,6 +80,14 @@ def run_synchronous_hfl_round(
             update.num_positive_interactions for update in client_updates
         ),
     )
+
+
+def _clone_shared_state(
+    shared_state: Mapping[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    return {
+        key: tensor.detach().clone() for key, tensor in shared_state.items()
+    }
 
 
 def select_party_ids(
