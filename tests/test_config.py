@@ -14,6 +14,12 @@ REFERENCE_CONFIG = (
     / "experiments"
     / "ml1m_fedgmf_fedavg.yaml"
 )
+SMOKE_CONFIG = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "experiments"
+    / "ml1m_fedgmf_fedavg_smoke.yaml"
+)
 
 
 def _reference_config() -> dict:
@@ -56,6 +62,61 @@ def test_reference_phase3_config_loads_and_validates() -> None:
         "per_local_epoch"
     )
     assert config["evaluation"]["negatives_per_positive"] == 99
+
+
+def test_ml1m_smoke_config_loads_and_preserves_frozen_semantics() -> None:
+    config = load_phase3_experiment_config(SMOKE_CONFIG)
+
+    assert config["experiment"]["name"] == "ml1m_fedgmf_fedavg_smoke"
+    assert config["dataset"]["input"] == "raw"
+    assert config["federation"] == {
+        "type": "hfl",
+        "partition": "grouped_round_robin",
+        "num_parties": 32,
+        "aggregation": "fedavg",
+        "rounds": 1,
+        "client_fraction": 0.03125,
+        "local_epochs": 1,
+    }
+    assert 32 * config["federation"]["client_fraction"] == 1
+    assert config["model"] == {
+        "name": "fedgmf",
+        "embedding_dim": 8,
+        "initialization": "ncf_gmf",
+        "user_embedding_scope": "party_local",
+        "item_embedding_scope": "federated",
+        "prediction_layer_scope": "federated",
+    }
+    assert config["optimization"] == {
+        "optimizer": "adam",
+        "learning_rate": 0.001,
+        "batch_size": 256,
+        "weight_decay": 0,
+        "train_negatives_per_positive": 4,
+        "train_negative_strategy": "uniform",
+        "train_negative_replacement": False,
+        "train_negative_excluded_splits": ["train", "valid", "test"],
+        "train_negative_resampling": "per_local_epoch",
+    }
+    assert config["evaluation"] == {
+        "k": [10],
+        "negatives_per_positive": 99,
+        "replacement": False,
+        "excluded_splits": ["train", "valid", "test"],
+        "candidate_reuse": "fixed_per_run",
+        "ranking_direction": "descending_score",
+        "tie_breaker": "item_id_ascending",
+        "validation_policy": "every_round_monitoring_only",
+        "early_stopping": False,
+        "model_selection": "none",
+        "test_policy": "final_state_only",
+    }
+    assert config["runtime"] == {
+        "seed": 2026,
+        "device": "cuda:0",
+        "results_root": "tmp/phase3_smoke_results",
+        "save_checkpoint": False,
+    }
 
 
 def test_missing_required_scientific_field_fails() -> None:

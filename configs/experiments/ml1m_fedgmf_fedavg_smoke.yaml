@@ -1,0 +1,69 @@
+experiment:
+  name: ml1m_fedgmf_fedavg_smoke
+
+dataset:
+  name: ml1m
+  task: implicit
+  input: raw
+  ratings_path: ml-1m/ml-1m/ratings.dat
+  expected_raw_sha256: 506d64ca44484487c11dc2d9a28de5c54948213e6b96285e298afe28d6ea4e0f
+  min_interactions_per_user: 3
+  duplicate_policy: keep_latest
+  implicit_feedback: all_observed
+  canonical_order: source_order
+  split: leave_one_out_temporal
+  tie_breaker: interaction_id
+
+federation:
+  type: hfl
+  partition: grouped_round_robin
+  num_parties: 32
+  aggregation: fedavg
+  rounds: 1
+  client_fraction: 0.03125
+  local_epochs: 1
+
+model:
+  name: fedgmf
+  embedding_dim: 8
+  initialization: ncf_gmf
+  user_embedding_scope: party_local
+  item_embedding_scope: federated
+  prediction_layer_scope: federated
+
+optimization:
+  optimizer: adam
+  learning_rate: 0.001
+  batch_size: 256
+  weight_decay: 0
+  train_negatives_per_positive: 4
+  train_negative_strategy: uniform
+  train_negative_replacement: false
+  train_negative_excluded_splits:
+    - train
+    - valid
+    - test
+  train_negative_resampling: per_local_epoch
+
+evaluation:
+  k:
+    - 10
+  negatives_per_positive: 99
+  replacement: false
+  excluded_splits:
+    - train
+    - valid
+    - test
+  candidate_reuse: fixed_per_run
+  ranking_direction: descending_score
+  tie_breaker: item_id_ascending
+  validation_policy: every_round_monitoring_only
+  early_stopping: false
+  model_selection: none
+  test_policy: final_state_only
+
+runtime:
+  seed: 2026
+  device: cuda:0
+  results_root: tmp/phase3_smoke_results
+  save_checkpoint: false
