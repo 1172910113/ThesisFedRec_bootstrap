@@ -64,6 +64,11 @@ def save_base_cache(
     bundle: DatasetBundle, cache_directory: str | Path
 ) -> dict[str, Any]:
     """Save only base interactions, splits, mappings, and a manifest."""
+    if bundle.feature_views:
+        raise ValueError(
+            "base-cache schema 1.0 cannot persist non-empty FeatureView payloads"
+        )
+
     missing = [
         key for key in _REQUIRED_METADATA_KEYS if key not in bundle.metadata
     ]

@@ -58,8 +58,8 @@ The validated Phase 3 baseline already provides:
 
 The relevant existing data seams are deliberately incomplete:
 
-- `DatasetBundle.feature_views` and `graph_views` are currently
-  `dict[str, object]` placeholders for canonical data;
+- Phase 4B1 makes `DatasetBundle.feature_views` a concrete canonical contract,
+  while `graph_views` remains a `dict[str, object]` placeholder;
 - the current empty `DatasetBundle.continual_views` placeholder must not be
   promoted into canonical dataset content; a future `ContinualView` is a
   separately constructed scenario object;
@@ -90,8 +90,8 @@ block 1.1, whose subject is heterogeneous information.
 
 ### 4.1 Canonical FeatureView
 
-`FeatureView` should become a concrete public dataclass in
-`src/data/contracts.py` during Phase 4B:
+Phase 4B1 makes `FeatureView` a concrete public dataclass in
+`src/data/contracts.py`:
 
 ```python
 FeatureView:

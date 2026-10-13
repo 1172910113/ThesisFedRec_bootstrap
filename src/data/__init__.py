@@ -2,6 +2,7 @@
 
 from src.data.contracts import (
     DatasetBundle,
+    FeatureView,
     InteractionSplits,
     InteractionTable,
     PartyData,
@@ -18,6 +19,7 @@ from src.data.split import leave_one_out_split
 
 __all__ = [
     "DatasetBundle",
+    "FeatureView",
     "InteractionSplits",
     "InteractionTable",
     "PartyData",

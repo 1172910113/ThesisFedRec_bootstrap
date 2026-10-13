@@ -116,6 +116,93 @@ class InteractionSplits:
 
 
 @dataclass(slots=True, kw_only=True)
+class FeatureView:
+    """Canonical feature rows aligned to one processed entity namespace."""
+
+    name: str
+    entity_kind: Literal["user", "item", "interaction"]
+    entity_ids: np.ndarray
+    modality: str
+    values: np.ndarray | tuple[str, ...]
+    feature_names: tuple[str, ...]
+    missing_mask: np.ndarray | None
+    metadata: Metadata
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("FeatureView name must be a string")
+        if not self.name.strip():
+            raise ValueError("FeatureView name must not be empty")
+        if self.entity_kind not in ("user", "item", "interaction"):
+            raise ValueError(
+                f"unsupported FeatureView entity_kind: {self.entity_kind}"
+            )
+
+        _validate_sorted_unique("FeatureView entity_ids", self.entity_ids)
+        if np.any(self.entity_ids < 0):
+            raise ValueError("FeatureView entity_ids must be non-negative")
+
+        if not isinstance(self.modality, str):
+            raise TypeError("FeatureView modality must be a string")
+        if not self.modality.strip():
+            raise ValueError("FeatureView modality must not be empty")
+
+        if not isinstance(self.feature_names, tuple) or any(
+            not isinstance(feature_name, str)
+            for feature_name in self.feature_names
+        ):
+            raise TypeError("FeatureView feature_names must be a tuple of strings")
+        if any(not feature_name.strip() for feature_name in self.feature_names):
+            raise ValueError("FeatureView feature_names must not contain empty names")
+        if len(set(self.feature_names)) != len(self.feature_names):
+            raise ValueError("FeatureView feature_names must be unique")
+
+        if isinstance(self.values, np.ndarray):
+            if self.values.ndim == 0:
+                raise ValueError("FeatureView values must have a row dimension")
+            values_shape = self.values.shape
+            if self.feature_names:
+                if self.values.ndim != 2:
+                    raise ValueError(
+                        "FeatureView values with feature_names must be two-dimensional"
+                    )
+                if len(self.feature_names) != self.values.shape[1]:
+                    raise ValueError(
+                        "FeatureView feature_names must match the values columns"
+                    )
+        elif isinstance(self.values, tuple) and all(
+            isinstance(value, str) for value in self.values
+        ):
+            values_shape = (len(self.values),)
+            if self.feature_names:
+                raise ValueError(
+                    "FeatureView feature_names must be empty for string values"
+                )
+        else:
+            raise TypeError(
+                "FeatureView values must be a NumPy array or a tuple of strings"
+            )
+
+        if values_shape[0] != len(self.entity_ids):
+            raise ValueError(
+                "FeatureView entity_ids and values must have the same row count"
+            )
+
+        if self.missing_mask is not None:
+            if not isinstance(self.missing_mask, np.ndarray):
+                raise TypeError("FeatureView missing_mask must be a NumPy array")
+            if self.missing_mask.dtype != np.bool_:
+                raise TypeError("FeatureView missing_mask must have boolean dtype")
+            if self.missing_mask.shape != values_shape:
+                raise ValueError(
+                    "FeatureView missing_mask must match the values shape"
+                )
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("FeatureView metadata must be a dictionary")
+
+
+@dataclass(slots=True, kw_only=True)
 class PartyData:
     """Sample and view availability for one federated party."""
 
@@ -174,7 +261,7 @@ class DatasetBundle:
     partition_name: str | None = None
     partition_kind: PartitionKind = "none"
     parties: tuple[PartyData, ...] = ()
-    feature_views: dict[str, object] = field(default_factory=dict)
+    feature_views: dict[str, FeatureView] = field(default_factory=dict)
     graph_views: dict[str, object] = field(default_factory=dict)
     continual_views: dict[str, object] = field(default_factory=dict)
 
@@ -209,5 +296,27 @@ class DatasetBundle:
             party_ids = [party.party_id for party in self.parties]
             if party_ids != list(range(len(self.parties))):
                 raise ValueError("parties must be ordered by contiguous party_id")
+
+        if not isinstance(self.feature_views, dict):
+            raise TypeError("feature_views must be a dictionary")
+        entity_limits = {
+            "user": len(self.user_id_map),
+            "item": len(self.item_id_map),
+            "interaction": len(self.interactions),
+        }
+        for view_name, view in self.feature_views.items():
+            if not isinstance(view, FeatureView):
+                raise TypeError("feature_views values must be FeatureView objects")
+            if view_name != view.name:
+                raise ValueError(
+                    "feature_views keys must match their FeatureView names"
+                )
+            if view.entity_ids.size and np.any(
+                view.entity_ids >= entity_limits[view.entity_kind]
+            ):
+                raise ValueError(
+                    f"FeatureView {view.name!r} references an out-of-range "
+                    f"{view.entity_kind} ID"
+                )
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dictionary")

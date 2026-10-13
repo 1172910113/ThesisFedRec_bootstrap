@@ -38,7 +38,7 @@ Arrays containing IDs are sorted unless their order has documented semantic mean
 
 ## 2. DatasetBundle
 
-`DatasetBundle` is the in-memory assembly of one processed base dataset, zero or one selected federation partition, and any requested derived views.
+`DatasetBundle` is the in-memory assembly of one processed base dataset, zero or one selected federation partition, and its requested canonical data views. Canonical `FeatureView` data belongs to the bundle; party-specific feature visibility remains a separate partition/scenario concern.
 
 ```python
 DatasetBundle:
@@ -344,7 +344,7 @@ Rules:
 
 ## 10. FeatureView interface
 
-`FeatureView` is retained as a future interface. Feature-view builders are not part of the initial Phase 2 implementation.
+`FeatureView` is the concrete canonical in-memory feature contract as of Phase 4B1. Feature-view builders and detailed party visibility remain outside Phase 4B1.
 
 ```python
 FeatureView:
@@ -362,14 +362,24 @@ FeatureView:
 
 Rules:
 
+- `name` and `modality` are non-empty strings;
+- `entity_kind` is exactly `user`, `item`, or `interaction`;
+- `entity_ids` is a sorted, unique, non-negative NumPy `int64` array;
 - each row in `values` corresponds to the same row in `entity_ids`;
 - entity IDs are unique within a view;
 - an entity absent from `entity_ids` does not possess that view;
 - element-level missingness uses `missing_mask`; zero is not implicitly missing;
-- `feature_names` is required for tabular matrices and may be empty for text or sequence values;
+- NumPy values have at least one dimension; string values use a tuple with one string per entity row;
+- when `feature_names` is non-empty, values are a two-dimensional NumPy array and the names match its columns;
+- `feature_names` is empty for tuple-based text or other unstructured string values;
+- feature names, when present, are unique non-empty strings;
+- `missing_mask`, when present, is a boolean NumPy array with exactly the same shape as `values`;
+- no value, including zero or NaN, is implicitly treated as missing;
 - categorical encoding maps and tokenization details belong in metadata;
 - different modalities are separate named views;
-- party-specific availability is represented through `PartyData.feature_view_names`;
+- `DatasetBundle.feature_views` keys equal their `FeatureView.name` values, and bundle validation checks entity IDs against the corresponding processed user, item, or interaction namespace;
+- `PartyData.feature_view_names` remains a coarse backward-compatible summary and does not determine sample ownership;
+- detailed party row/field/view visibility belongs to the later `FeaturePartition` contract;
 - DOI4-specific imputation, fusion, and collaboration remain method-owned.
 
 ---
@@ -510,6 +520,8 @@ Rules:
 
 The initial Phase 2 implementation only needs `manifest.json` and the `base/` artifacts. It must not implement feature, graph, continual, partition, or negative-sample cache trees until those caches are concretely needed.
 
+Phase 4B1 does not change base-cache schema `1.0`. Loading a schema-`1.0` cache reconstructs a bundle with an empty `feature_views` collection. The schema-`1.0` writer accepts empty feature collections only and explicitly rejects a bundle containing canonical `FeatureView` payloads rather than silently dropping them. Persisting such payloads requires a future independently versioned derived-view artifact or a deliberate base-cache schema migration.
+
 ---
 
 ## 14. Reproducibility metadata
@@ -594,7 +606,11 @@ The initial Phase 2 implementation must not include:
 - method-specific preprocessing;
 - recommendation models or training logic.
 
-`FeatureView`, `GraphView`, `ContinualView`, VFL, HyFL, and the complete cache layout remain documented interfaces only.
+Phase 4B1 implements only the canonical `FeatureView` contract and its
+in-memory `DatasetBundle` integration. Feature builders, `FeaturePartition`,
+and feature persistence remain future work. `GraphView`, `ContinualView`,
+VFL, HyFL, and the complete derived-cache layout remain documented interfaces
+only.
 
 ---
 
@@ -615,7 +631,9 @@ src/data/
 
 Responsibilities:
 
-- `contracts.py`: `InteractionTable`, basic bundle/party contracts, reserved view contracts, and schema validation;
+- `contracts.py`: `InteractionTable`, basic bundle/party contracts, the
+  concrete `FeatureView` contract, other reserved view contracts, and schema
+  validation;
 - `preprocess.py`: deterministic ID mapping and basic bundle construction from normalized interaction inputs;
 - `split.py`: deterministic leave-one-out splitting;
 - `negative_sampling.py`: shared negative-item sampling only;

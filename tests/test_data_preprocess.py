@@ -49,6 +49,7 @@ def test_preprocessing_is_deterministic_and_ids_are_contiguous(
 
     assert first.user_id_map == second.user_id_map
     assert first.item_id_map == second.item_id_map
+    assert first.feature_views == second.feature_views == {}
     assert first.user_id_map == {10: 0, 20: 1, 40: 2, 50: 3}
     assert sorted(first.user_id_map.values()) == list(range(4))
     assert sorted(first.item_id_map.values()) == list(range(11))

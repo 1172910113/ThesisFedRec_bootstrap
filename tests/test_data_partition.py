@@ -1,6 +1,8 @@
+from dataclasses import replace
+
 import numpy as np
 
-from src.data.contracts import DatasetBundle, PartyData
+from src.data.contracts import DatasetBundle, FeatureView, PartyData
 from src.data.partition import build_hfl_partition
 
 
@@ -117,3 +119,51 @@ def test_grouped_round_robin_is_deterministic_and_keeps_users_intact(
         np.arange(len(processed_bundle.user_id_map), dtype=np.int64),
     )
     _assert_partition_covers_splits(processed_bundle, first)
+
+
+def test_party_feature_view_summary_does_not_change_sample_ownership(
+    processed_bundle: DatasetBundle,
+) -> None:
+    view = FeatureView(
+        name="item_numeric",
+        entity_kind="item",
+        entity_ids=np.array([0], dtype=np.int64),
+        modality="tabular",
+        values=np.array([[1.0]], dtype=np.float32),
+        feature_names=("value",),
+        missing_mask=None,
+        metadata={},
+    )
+    featured_bundle = replace(
+        processed_bundle,
+        feature_views={view.name: view},
+    )
+
+    without_features = build_hfl_partition(processed_bundle, seed=7)
+    with_features = build_hfl_partition(featured_bundle, seed=7)
+
+    for plain_party, featured_party in zip(
+        without_features, with_features, strict=True
+    ):
+        assert plain_party.feature_view_names == ()
+        assert featured_party.feature_view_names == (view.name,)
+        np.testing.assert_array_equal(
+            plain_party.train_interaction_ids,
+            featured_party.train_interaction_ids,
+        )
+        np.testing.assert_array_equal(
+            plain_party.valid_interaction_ids,
+            featured_party.valid_interaction_ids,
+        )
+        np.testing.assert_array_equal(
+            plain_party.test_interaction_ids,
+            featured_party.test_interaction_ids,
+        )
+        np.testing.assert_array_equal(
+            plain_party.user_ids,
+            featured_party.user_ids,
+        )
+        np.testing.assert_array_equal(
+            plain_party.item_ids,
+            featured_party.item_ids,
+        )

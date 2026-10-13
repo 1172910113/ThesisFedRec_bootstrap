@@ -1,11 +1,12 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from src.data.cache import load_base_cache, save_base_cache
-from src.data.contracts import DatasetBundle
+from src.data.contracts import DatasetBundle, FeatureView
 
 
 def test_base_cache_round_trip(
@@ -33,6 +34,8 @@ def test_base_cache_round_trip(
     assert loaded.user_id_map == processed_bundle.user_id_map
     assert loaded.item_id_map == processed_bundle.item_id_map
     assert loaded.metadata == processed_bundle.metadata
+    assert processed_bundle.feature_views == {}
+    assert loaded.feature_views == {}
 
     for name in (
         "interaction_ids",
@@ -90,3 +93,31 @@ def test_base_cache_rejects_unsupported_schema_version(
 
     with pytest.raises(ValueError, match="unsupported cache schema version"):
         load_base_cache(cache_path)
+
+
+def test_schema_1_base_cache_rejects_non_empty_feature_views(
+    processed_bundle: DatasetBundle, tmp_path: Path
+) -> None:
+    view = FeatureView(
+        name="item_numeric",
+        entity_kind="item",
+        entity_ids=np.array([0], dtype=np.int64),
+        modality="tabular",
+        values=np.array([[1.0]], dtype=np.float32),
+        feature_names=("value",),
+        missing_mask=None,
+        metadata={},
+    )
+    bundle = replace(
+        processed_bundle,
+        feature_views={view.name: view},
+    )
+    cache_path = tmp_path / "processed"
+
+    with pytest.raises(
+        ValueError,
+        match="schema 1.0 cannot persist non-empty FeatureView payloads",
+    ):
+        save_base_cache(bundle, cache_path)
+
+    assert not cache_path.exists()
