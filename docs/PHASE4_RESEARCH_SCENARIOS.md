@@ -63,8 +63,9 @@ The relevant existing data seams are deliberately incomplete:
 - the current empty `DatasetBundle.continual_views` placeholder must not be
   promoted into canonical dataset content; a future `ContinualView` is a
   separately constructed scenario object;
-- `PartyData.feature_view_names` and `graph_view_names` can name whole visible
-  views but cannot describe party-specific row, field, node, or edge subsets;
+- `PartyData.feature_view_names` and `graph_view_names` remain coarse visible-
+  view summaries; Phase 4B2 adds separate feature row/field access, while
+  detailed graph node/edge visibility remains future work;
 - the base cache serializes only interactions, splits, and mappings under
   schema `1.0`;
 - the Phase 3 runner is explicitly FedGMF/HFL and initializes one run from
@@ -128,7 +129,8 @@ permission to observe them.
 
 Whole-view names alone cover simple missing-view scenarios, but cannot
 represent different parties seeing different rows or fields of the same
-canonical view. The minimum additional scenario contracts are:
+canonical view. Phase 4B2 implements the minimum additional scenario
+contracts:
 
 ```python
 FeatureAccess:
@@ -153,6 +155,16 @@ three independent levels of visibility without copying feature arrays:
 The partition is a derived experiment scenario object outside
 `DatasetBundle`. It references both bundle view names and actual `party_id`
 values. It does not own interactions, parties, or feature values.
+
+Bundle-aware validation receives the allowed `PartyData` set explicitly, so
+party IDs may be non-contiguous and never imply user IDs. It rejects unknown
+parties, views, rows, or named fields and duplicate party/view descriptors.
+Unstructured views without named fields support whole-payload access only.
+
+The assignment checksum canonicalizes party IDs, view names, entity IDs, and
+selected field names. It is independent of mapping/descriptor input order and
+does not include the scenario name or metadata. Phase 4B2 adds no persistence
+or scenario generator.
 
 `PartyData.feature_view_names` remains as the coarse, backward-compatible
 summary of views visible to a party. When a `FeaturePartition` is supplied,

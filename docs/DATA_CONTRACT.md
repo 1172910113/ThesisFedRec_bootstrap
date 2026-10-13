@@ -201,7 +201,7 @@ The fields have separate meanings:
 |---|---|
 | Sample partition | `train_interaction_ids`, `valid_interaction_ids`, `test_interaction_ids` |
 | Entity coverage | `user_ids`, `item_ids` |
-| Feature partition | `feature_view_names`, `graph_view_names` |
+| Coarse view summary | `feature_view_names`, `graph_view_names` |
 | Label availability | `owns_labels` |
 
 Rules:
@@ -382,6 +382,69 @@ Rules:
 - detailed party row/field/view visibility belongs to the later `FeaturePartition` contract;
 - DOI4-specific imputation, fusion, and collaboration remain method-owned.
 
+### 10.1 Party-specific FeatureAccess and FeaturePartition
+
+Phase 4B2 adds detailed feature visibility as a derived scenario contract
+outside `DatasetBundle`:
+
+```python
+FeatureAccess:
+    view_name: str
+    entity_ids: IntArray | None
+    feature_names: tuple[str, ...] | None
+
+FeaturePartition:
+    name: str
+    party_access: dict[int, tuple[FeatureAccess, ...]]
+    metadata: Metadata
+```
+
+`FeatureAccess` contains references only; it never owns or copies
+`FeatureView.values`. Its rules are:
+
+- `view_name` names exactly one canonical `FeatureView`;
+- `entity_ids is None` grants access to every canonical row, while an explicit
+  sorted, unique, non-negative `int64` array grants access only to those
+  canonical entity IDs;
+- `feature_names is None` grants access to every canonical field, while an
+  explicit tuple grants access only to those named canonical fields;
+- field selection is unsupported for a view with no named fields, including
+  tuple-based text views; such a view uses `feature_names=None` for its whole
+  payload;
+- an empty field tuple is a valid explicit selection of no fields from a
+  field-addressable view;
+- absence of a descriptor for a party/view means that the entire view is
+  unavailable to that party.
+
+`FeaturePartition` contains a scenario name, party-to-access mapping, and
+JSON-compatible reproducibility metadata. It contains no interaction IDs,
+user ownership, item ownership, feature values, or training state. Party IDs
+are non-negative but need not be contiguous and never imply user IDs.
+
+Validation against a `DatasetBundle` and an explicitly supplied `PartyData`
+set requires:
+
+- every referenced party and view to exist;
+- every selected entity ID to be a row in the referenced canonical view;
+- every selected field to exist in a field-addressable canonical view;
+- at most one descriptor per party/view;
+- `PartyData.feature_view_names`, as a coarse compatibility summary, to match
+  the detailed view names. Detailed rows and fields come only from
+  `FeaturePartition`.
+
+Source missingness and scenario visibility are separate:
+
+```text
+FeatureView.missing_mask = canonical/source missingness
+FeaturePartition         = experiment/party visibility
+```
+
+Partition validation never changes the canonical values or missing mask. The
+deterministic feature-partition checksum hashes canonicalized party, view,
+row, and field access definitions. It is independent of dictionary,
+descriptor, and selected-field input order; scenario names and metadata are
+not part of the access-assignment checksum.
+
 ---
 
 ## 11. GraphView interface
@@ -522,6 +585,10 @@ The initial Phase 2 implementation only needs `manifest.json` and the `base/` ar
 
 Phase 4B1 does not change base-cache schema `1.0`. Loading a schema-`1.0` cache reconstructs a bundle with an empty `feature_views` collection. The schema-`1.0` writer accepts empty feature collections only and explicitly rejects a bundle containing canonical `FeatureView` payloads rather than silently dropping them. Persisting such payloads requires a future independently versioned derived-view artifact or a deliberate base-cache schema migration.
 
+Phase 4B2 likewise adds no persistence. `FeaturePartition` instances and
+their checksums are in-memory scenario objects; no base-cache or derived-cache
+payload is introduced in this phase.
+
 ---
 
 ## 14. Reproducibility metadata
@@ -556,6 +623,7 @@ Partition and sampling metadata record, when applicable:
 - artifact counts and checksums;
 - HFL mode and explicit user-to-party assignment;
 - per-party interaction, user, and item counts;
+- explicit feature-access definitions and their assignment checksum;
 - negative-sampling exclusion and replacement policies.
 
 Future derived-view manifests additionally record feature encoding and missingness rules, graph construction and source-split rules, or continual-stage criteria and boundaries.
@@ -574,11 +642,13 @@ Creation time and machine hostname may be recorded for auditing but do not affec
 | `DatasetBundle` | All fields | `partition_name` may be `None`; party and view containers may be empty |
 | `PartyData` | All fields | Interaction, entity, or view arrays may be empty when partition semantics permit |
 | `FeatureView` | All fields except mask | `missing_mask` |
+| `FeatureAccess` | `view_name` | `entity_ids` and `feature_names`; `None` means all canonical rows or fields |
+| `FeaturePartition` | All fields | `party_access` may be empty |
 | `GraphView` | Names, nodes, node types, edges, relations, metadata | User/item mappings, weights, and node features |
 | `ContinualStage` | All fields | Arrays may be empty only when documented |
 | `ContinualView` | All fields | None |
 
-Required containers are empty rather than `None`. `None` is reserved for genuinely unavailable optional values.
+Required containers are empty rather than `None`. `None` is reserved for genuinely unavailable optional values except for the explicit all-rows/all-fields semantics of `FeatureAccess`.
 
 ---
 
@@ -606,11 +676,12 @@ The initial Phase 2 implementation must not include:
 - method-specific preprocessing;
 - recommendation models or training logic.
 
-Phase 4B1 implements only the canonical `FeatureView` contract and its
-in-memory `DatasetBundle` integration. Feature builders, `FeaturePartition`,
-and feature persistence remain future work. `GraphView`, `ContinualView`,
-VFL, HyFL, and the complete derived-cache layout remain documented interfaces
-only.
+Phase 4B1 implements the canonical `FeatureView` contract and its in-memory
+`DatasetBundle` integration. Phase 4B2 implements explicit `FeatureAccess`
+and `FeaturePartition` contracts, validation, and deterministic assignment
+checksums. Random scenario builders, severity presets, feature materialization,
+and feature persistence remain future work. `GraphView`, `ContinualView`, VFL,
+HyFL, and the complete derived-cache layout remain documented interfaces only.
 
 ---
 
@@ -622,6 +693,7 @@ The initial implementation should add only:
 src/data/
 ├── __init__.py
 ├── contracts.py
+├── features.py
 ├── preprocess.py
 ├── split.py
 ├── negative_sampling.py
@@ -632,8 +704,10 @@ src/data/
 Responsibilities:
 
 - `contracts.py`: `InteractionTable`, basic bundle/party contracts, the
-  concrete `FeatureView` contract, other reserved view contracts, and schema
+  concrete feature contracts, other reserved view contracts, and schema
   validation;
+- `features.py`: bundle-aware `FeaturePartition` validation and deterministic
+  access-assignment checksums; no scenario generation or persistence;
 - `preprocess.py`: deterministic ID mapping and basic bundle construction from normalized interaction inputs;
 - `split.py`: deterministic leave-one-out splitting;
 - `negative_sampling.py`: shared negative-item sampling only;

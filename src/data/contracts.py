@@ -202,6 +202,93 @@ class FeatureView:
             raise TypeError("FeatureView metadata must be a dictionary")
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FeatureAccess:
+    """One party's visible rows and fields from a canonical FeatureView."""
+
+    view_name: str
+    entity_ids: np.ndarray | None = None
+    feature_names: tuple[str, ...] | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.view_name, str):
+            raise TypeError("FeatureAccess view_name must be a string")
+        if not self.view_name.strip():
+            raise ValueError("FeatureAccess view_name must not be empty")
+
+        if self.entity_ids is not None:
+            _validate_sorted_unique("FeatureAccess entity_ids", self.entity_ids)
+            if np.any(self.entity_ids < 0):
+                raise ValueError("FeatureAccess entity_ids must be non-negative")
+            entity_ids = self.entity_ids.copy()
+            entity_ids.setflags(write=False)
+            object.__setattr__(self, "entity_ids", entity_ids)
+
+        if self.feature_names is not None:
+            if not isinstance(self.feature_names, tuple) or any(
+                not isinstance(feature_name, str)
+                for feature_name in self.feature_names
+            ):
+                raise TypeError(
+                    "FeatureAccess feature_names must be a tuple of strings or None"
+                )
+            if any(not name.strip() for name in self.feature_names):
+                raise ValueError(
+                    "FeatureAccess feature_names must not contain empty names"
+                )
+            if len(set(self.feature_names)) != len(self.feature_names):
+                raise ValueError("FeatureAccess feature_names must be unique")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FeaturePartition:
+    """Party-specific access references to canonical FeatureView data."""
+
+    name: str
+    party_access: dict[int, tuple[FeatureAccess, ...]]
+    metadata: Metadata
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str):
+            raise TypeError("FeaturePartition name must be a string")
+        if not self.name.strip():
+            raise ValueError("FeaturePartition name must not be empty")
+        if not isinstance(self.party_access, dict):
+            raise TypeError("FeaturePartition party_access must be a dictionary")
+
+        copied_access: dict[int, tuple[FeatureAccess, ...]] = {}
+        for party_id, accesses in self.party_access.items():
+            if (
+                isinstance(party_id, bool)
+                or not isinstance(party_id, int)
+                or party_id < 0
+            ):
+                raise ValueError(
+                    "FeaturePartition party IDs must be non-negative integers"
+                )
+            if not isinstance(accesses, tuple) or any(
+                not isinstance(access, FeatureAccess) for access in accesses
+            ):
+                raise TypeError(
+                    "FeaturePartition access entries must be tuples of FeatureAccess"
+                )
+            view_names = [access.view_name for access in accesses]
+            if len(set(view_names)) != len(view_names):
+                raise ValueError(
+                    "FeaturePartition cannot contain duplicate party/view access"
+                )
+            copied_access[party_id] = tuple(accesses)
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError("FeaturePartition metadata must be a dictionary")
+        object.__setattr__(self, "party_access", copied_access)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    def access_for_party(self, party_id: int) -> tuple[FeatureAccess, ...]:
+        """Return detailed access for one party, or no access when absent."""
+        return self.party_access.get(party_id, ())
+
+
 @dataclass(slots=True, kw_only=True)
 class PartyData:
     """Sample and view availability for one federated party."""
