@@ -18,11 +18,24 @@ GCPN retain their own learning algorithms.
 The design follows three boundaries:
 
 1. `DatasetBundle` owns canonical processed information aligned to the stable
-   user, item, and interaction namespaces.
+   user, item, and interaction namespaces: interactions plus canonical
+   `FeatureView` and `GraphView` objects when available.
 2. Derived scenario objects describe which parts of that information a party
-   or stage may use. They do not remap IDs or copy the base dataset.
+   or stage may use. `FeaturePartition`, `GraphPartition`, and
+   `ContinualView` remain outside `DatasetBundle`; they do not remap IDs or
+   copy the base dataset.
 3. Method code owns fusion, graph learning, specialized optimization,
    adaptation, and collaboration algorithms.
+
+The continual boundary is specifically:
+
+```text
+DatasetBundle -> ContinualView -> StageManager
+```
+
+`DatasetBundle` owns canonical data, `ContinualView` owns derived stage
+membership/reference definitions, and `StageManager` owns execution
+sequencing.
 
 Phase 4A is design-only. It does not alter source code, the Phase 2B cache, or
 the validated Phase 3 execution path.
@@ -45,8 +58,11 @@ The validated Phase 3 baseline already provides:
 
 The relevant existing data seams are deliberately incomplete:
 
-- `DatasetBundle.feature_views`, `graph_views`, and `continual_views` are
-  currently `dict[str, object]` placeholders;
+- `DatasetBundle.feature_views` and `graph_views` are currently
+  `dict[str, object]` placeholders for canonical data;
+- the current empty `DatasetBundle.continual_views` placeholder must not be
+  promoted into canonical dataset content; a future `ContinualView` is a
+  separately constructed scenario object;
 - `PartyData.feature_view_names` and `graph_view_names` can name whole visible
   views but cannot describe party-specific row, field, node, or edge subsets;
 - the base cache serializes only interactions, splits, and mappings under
@@ -64,7 +80,7 @@ a registry, plugin system, generic trainer, or protocol hierarchy.
 | 1.1 heterogeneous information | Feature fields, modalities, view availability, and completeness | Canonical `FeatureView` values plus an explicit party feature partition | Deliver only the views/slices visible to each selected party and record the resolved assignment | Missing-view handling, representation learning, fusion, and adaptive collaboration |
 | 1.2 distributed relations | Local relation subgraphs and overlap | Canonical `GraphView` plus explicit party node/edge/relation visibility | Deliver each party's allowed subgraph and account for graph-related payloads when a method sends them | GNNs, graph completion, relation propagation, graph objectives, and graph aggregation |
 | 2.1 parameter update scope | Trainable and communicated subsets of model parameters | None | Apply a resolved `ParameterUpdatePolicy`, form the actual payload, and count actual tensors | PEFT modules and the scientific rule that selects a method-specific subset |
-| 2.2 continual learning | Stage-indexed interaction views and state transitions | `ContinualView` referencing base interaction IDs | `StageManager` sequencing and explicit warm-start/reset handoff | Retention, replay, regularization, expansion, and other continual algorithms |
+| 2.2 continual learning | Stage-indexed interaction views and state transitions | Derived `ContinualView` outside the bundle, referencing base interaction IDs | `StageManager` sequencing and explicit warm-start/reset handoff | Retention, replay, regularization, expansion, and other continual algorithms |
 
 Statistical quantity skew, popularity skew, and label skew may later be
 additional sample-partition scenarios. They are not the core abstraction for
@@ -153,7 +169,7 @@ This representation supports the intended scenarios directly:
 | Complete homogeneous information | Every party has full access to the same selected feature views |
 | Single-view missing | A named view is absent from selected parties' access tuples |
 | Multi-view missing | Multiple named views are absent, with the full assignment recorded |
-| Mild/moderate/severe heterogeneity | A named deterministic scenario recipe resolves to explicit per-party access; the label alone is never considered reproducible |
+| Future named heterogeneity levels | After researcher approval, a name may map to explicit quantitative parameters and a fully resolved per-party assignment |
 | Unbalanced view availability | View assignment frequencies differ across parties |
 | Cross-party view overlap | The same view, row, or field appears in multiple parties' access descriptors |
 | Partial entity coverage | `entity_ids` selects the visible rows of a canonical view |
@@ -165,9 +181,11 @@ would make it impossible to distinguish a naturally absent value from a
 controlled experimental intervention.
 
 Scenario builders must be deterministic under an explicit seed, validate all
-references, and save the complete resolved assignment plus a checksum. A
-severity name such as `moderate` is descriptive metadata, not a substitute
-for the assignment.
+references, and save the complete resolved assignment plus a checksum. Phase
+4B does not define or implement thesis-level labels such as `H0`-`H3`,
+`mild`, `moderate`, or `severe`. If later approved, each label must map to
+explicit quantitative scenario parameters; a label alone is never sufficient
+provenance.
 
 No 1.1 fusion, imputation, contrastive objective, collaboration rule, or
 adaptive aggregation belongs in the data layer.
@@ -369,8 +387,16 @@ extra fields required now. Party-stage data is obtained by intersecting a
 stage's IDs with each party's existing interaction IDs, so continual learning
 remains independent of HFL/VFL/HyFL.
 
-`DatasetBundle.continual_views` becomes `dict[str, ContinualView]`. A selected
-view is immutable experiment input, not mutable runner progress.
+`ContinualView` is a derived experiment-scenario object outside
+`DatasetBundle`. A selected view is immutable experiment input, not mutable
+runner progress. It references the bundle's canonical interaction IDs and is
+passed separately to `StageManager`.
+
+This placement allows the same base bundle and base cache to support multiple
+valid protocols, including 5-stage or 10-stage temporal views, equal-duration
+or equal-interaction views, and future client-evolution or
+information-evolution views. Constructing one of these protocols must not
+require a different base `DatasetBundle`.
 
 ### 7.2 StageManager
 
@@ -423,7 +449,7 @@ a synthetic one-stage manager merely for conceptual uniformity.
 | Interactions, splits, ID maps | Base `DatasetBundle` | Stable dataset identity used by every method |
 | Canonical `FeatureView` values | `DatasetBundle.feature_views` | Dataset information aligned to base namespaces |
 | Canonical raw `GraphView` structure | `DatasetBundle.graph_views` | Raw relations are shared data, not learned method state |
-| Canonical `ContinualView` definitions | `DatasetBundle.continual_views` | Stages reference base interaction IDs |
+| Continual stage membership/reference definitions | Derived `ContinualView` outside the bundle | Multiple experiment protocols may reference the same canonical interaction IDs |
 | Sample ownership | `PartyData` interaction/user/item fields | Already stable and independent of feature visibility |
 | Coarse visible-view names | Existing `PartyData` name tuples | Backward-compatible summary and simple whole-view scenarios |
 | Detailed feature visibility | Derived `FeaturePartition` outside the bundle | Experiment-specific party access, not canonical data |
@@ -434,32 +460,45 @@ a synthetic one-stage manager merely for conceptual uniformity.
 
 ### 8.2 Backward-compatible steps
 
-1. Replace the three `dict[str, object]` annotations with their concrete view
-   types and add validation. Empty dictionaries remain valid defaults.
-2. Add the view dataclasses without changing `InteractionTable`, mappings,
-   splits, or PartyData's existing mandatory fields.
+1. Replace the `feature_views` and `graph_views` `dict[str, object]`
+   annotations with their concrete canonical view types and add validation.
+   Empty dictionaries remain valid defaults.
+2. Add the feature and graph view dataclasses without changing
+   `InteractionTable`, mappings, splits, or PartyData's existing mandatory
+   fields. Do not populate or serialize the current `continual_views`
+   placeholder; Phase 4F must pass a derived `ContinualView` separately.
 3. Keep detailed feature/graph partitions as separate derived objects. Do not
    insert them into the base cache or duplicate them into every party's
    metadata.
 4. Load the existing Phase 2B cache exactly as today; the reconstructed bundle
    simply has empty view dictionaries.
-5. When derived-view persistence is needed, add independently versioned
-   manifests under `features/`, `graphs/`, or `continual/`. Each manifest
-   records the base fingerprint, construction config, checksums, and its own
-   view-schema version.
+5. When derived-artifact persistence is needed, use an independently
+   versioned manifest that records the base fingerprint, construction config,
+   checksums, and its own artifact-schema version. Continual protocols, when
+   persisted, are scenario artifacts rather than canonical bundle content.
 6. Save resolved scenario assignments and checksums with experiment results,
    not in the immutable base manifest.
 
-No base-cache schema bump is required for Phases 4B, 4C, or 4F under this
-plan. `SCHEMA_VERSION = "1.0"` remains valid because its serialized
-interactions, mappings, splits, and semantics do not change.
+The existing ML1M base-cache schema may remain `1.0` during the initial Phase
+4B/4C synthetic contract work only if all of the following remain true:
 
-A base schema bump is required only if a later phase changes a mandatory base
-artifact, base ID/split semantics, or the required base manifest structure in
-an incompatible way. Merely adding an optional derived-view loader is not
-such a change. If a bump becomes necessary, it must occur in the phase that
-implements that incompatible serialization, with an explicit migration or a
-clear rejection of `1.0`; it must not be performed preemptively in Phase 4B.
+- existing Phase 3 cache payload semantics are unchanged;
+- new `FeatureView` and `GraphView` fields are optional and default-empty for
+  existing bundles;
+- `FeatureView` and `GraphView` payloads are not silently persisted into the
+  old schema.
+
+When canonical feature or graph data is first persisted as a reusable dataset
+artifact, that work must either introduce an independently versioned
+derived-view artifact referencing the base fingerprint or deliberately
+migrate the base-cache schema. It must not add serialized fields while still
+calling the payload schema `1.0`.
+
+A base schema migration is also required if a later phase changes a mandatory
+base artifact, base ID/split semantics, or the required base manifest
+structure incompatibly. It must occur in the phase that implements the new
+serialization, with an explicit migration or a clear rejection of `1.0`, and
+must not be performed preemptively during synthetic contract work.
 
 ## 9. Configuration plan
 
@@ -499,7 +538,8 @@ The sections have deliberately narrow meanings:
 - `feature_scenario` selects a deterministic feature-partition recipe;
 - `graph_scenario` selects a deterministic graph-partition recipe;
 - `parameter_update` selects a model-supported resolved update policy;
-- `continual` selects a `ContinualView` and explicit state transition.
+- `continual` selects a separately resolved derived `ContinualView` and an
+  explicit state transition; `view_name` is not a `DatasetBundle` key.
 
 When continual execution is enabled, a minimal form is:
 
@@ -510,10 +550,12 @@ continual:
   state_transition: warm_start
 ```
 
-The exact recipe-specific fields for heterogeneity levels should be added only
-when those recipes are scientifically frozen. The saved result must include
-the fully resolved party access/stage assignments and checksums; `level:
-moderate` alone is not sufficient provenance.
+The example `complete` values mean literal full visibility, not a thesis
+severity category. Recipe-specific fields and named heterogeneity levels
+should be added only when their quantitative definitions are scientifically
+frozen. The saved result must include the fully resolved party access/stage
+assignments and checksums; a future level label alone is not sufficient
+provenance.
 
 The current Phase 3 validator and its reference YAML remain unchanged. A
 Phase 4 validator may require the new sections for Phase 4 scenario runs while
@@ -529,9 +571,9 @@ Configuration consistency checks include:
   IDs;
 - `parameter_update.policy` must be supported explicitly by the selected
   model/method;
-- enabled continual execution requires an existing named view and a supported
-  transition; disabled execution requires `view_name: null` and
-  `state_transition: none`.
+- enabled continual execution requires a resolvable derived `ContinualView`
+  and a supported transition; disabled execution requires `view_name: null`
+  and `state_transition: none`.
 
 ## 10. HFL, VFL, and HyFL compatibility
 
@@ -672,13 +714,17 @@ rather than designed around FedGMF alone.
   validation, tests, and `docs/DATA_CONTRACT.md`.
 - Dependencies: stable base IDs and existing `PartyData`.
 - Deliver: `FeatureView`, `FeatureAccess`, `FeaturePartition`, deterministic
-  whole-view/row/field visibility, validation, checksums, and synthetic views.
+  whole-view/row/field visibility, explicit missing views/rows/fields,
+  validation, checksums, and deterministic synthetic scenario construction.
 - Acceptance: aligned shapes/IDs and missing masks are enforced; same seed
   reproduces the resolved assignment; different parties can have overlapping
   features while sample ownership remains unchanged; Phase 3 tests pass.
-- Out of scope: DOI4, learned fusion/imputation, VFL execution, Amazon data.
-- Cache impact: no base schema bump; derived feature persistence may use an
-  independently versioned manifest only if needed.
+- Out of scope: DOI4, learned fusion/imputation, VFL execution, Amazon data,
+  and thesis-level `H0`-`H3` or mild/moderate/severe semantics unless their
+  quantitative definitions are explicitly approved by the researcher.
+- Cache impact: schema `1.0` remains only under the conditions in Section 8.2;
+  persisted canonical features require a versioned derived artifact or a
+  deliberate base-cache migration.
 
 ### Phase 4C — GraphView and partial-graph scenarios
 
@@ -688,14 +734,18 @@ rather than designed around FedGMF alone.
 - Dependencies: Phase 4B's established canonical-view/scenario separation,
   but not feature values themselves.
 - Deliver: `GraphView`, `GraphAccess`, `GraphPartition`, canonical synthetic
-  graph construction, party subgraph validation, overlap statistics, and
-  checksums.
+  graph construction, explicit node/edge/relation visibility, deterministic
+  partial-graph construction, party subgraph validation, overlap statistics,
+  and checksums.
 - Acceptance: node/relation mappings validate; every visible edge has visible
   endpoints; parties can overlap; withheld edges/relations are inaccessible;
   no validation/test leakage enters a training graph.
-- Out of scope: PKGRec, GNNs, graph completion/propagation/aggregation.
-- Cache impact: no base schema bump; any graph manifest is independently
-  versioned and references the base fingerprint.
+- Out of scope: PKGRec, GNNs, graph completion/propagation/aggregation, and
+  thesis-level graph-severity categories until their quantitative definitions
+  are explicitly approved by the researcher.
+- Cache impact: schema `1.0` remains only under the conditions in Section 8.2;
+  persisted canonical graphs require a versioned derived artifact or a
+  deliberate base-cache migration.
 
 ### Phase 4D — public FedNCF backbone
 
@@ -734,6 +784,9 @@ rather than designed around FedGMF alone.
 - Deliver: deterministic temporal-increment views, stage intersections,
   warm-start/reset execution, stage/global-round metadata, and per-stage
   evaluation records.
+- Boundary: `ContinualView` is built from and references a `DatasetBundle`,
+  but remains a separate scenario input to `StageManager`; it is never
+  canonical bundle content.
 - Acceptance: stages reference only base IDs; temporal boundaries and overlap
   rules validate; warm-start exactly preserves prior state; reset reproduces
   initialization; continual and federation dimensions remain separable.
@@ -812,4 +865,5 @@ Phase 4A does not authorize:
 
 The next authorized implementation should therefore begin with Phase 4B only:
 concrete `FeatureView` validation and deterministic heterogeneous-information
-scenario contracts on synthetic data.
+scenario primitives on synthetic data, parameterized explicitly and without
+unapproved thesis-level severity labels.
