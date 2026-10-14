@@ -395,7 +395,7 @@ FeatureAccess:
 
 FeaturePartition:
     name: str
-    party_access: dict[int, tuple[FeatureAccess, ...]]
+    party_access: Mapping[int, tuple[FeatureAccess, ...]]
     metadata: Metadata
 ```
 
@@ -420,6 +420,17 @@ FeaturePartition:
 JSON-compatible reproducibility metadata. It contains no interaction IDs,
 user ownership, item ownership, feature values, or training state. Party IDs
 are non-negative but need not be contiguous and never imply user IDs.
+
+Access assignments are read-only through the public configuration interface.
+Construction defensively copies the party mapping and exposes a read-only
+mapping over that copy; each party's descriptors and each field selection
+remain immutable tuples. Explicit entity selections remain one-dimensional
+NumPy `int64` arrays, copied into immutable byte-backed storage so both item
+assignment and `setflags(write=True)` are rejected. Mutating constructor
+inputs cannot change stored assignments. `None`, empty selections, and
+explicit full selections retain their distinct meanings and checksums.
+Metadata remains a plain dictionary and is not part of this immutability or
+access-checksum guarantee.
 
 Validation against a `DatasetBundle` and an explicitly supplied `PartyData`
 set requires:

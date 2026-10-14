@@ -1,6 +1,8 @@
 """Lightweight contracts for the unified processed-data layer."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Literal
 
 import numpy as np
@@ -204,7 +206,7 @@ class FeatureView:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FeatureAccess:
-    """One party's visible rows and fields from a canonical FeatureView."""
+    """Frozen row/field selection with IDs backed by immutable bytes."""
 
     view_name: str
     entity_ids: np.ndarray | None = None
@@ -220,8 +222,8 @@ class FeatureAccess:
             _validate_sorted_unique("FeatureAccess entity_ids", self.entity_ids)
             if np.any(self.entity_ids < 0):
                 raise ValueError("FeatureAccess entity_ids must be non-negative")
-            entity_ids = self.entity_ids.copy()
-            entity_ids.setflags(write=False)
+            # Immutable backing prevents callers from re-enabling NumPy writes.
+            entity_ids = np.frombuffer(self.entity_ids.tobytes(), dtype=np.int64)
             object.__setattr__(self, "entity_ids", entity_ids)
 
         if self.feature_names is not None:
@@ -242,10 +244,10 @@ class FeatureAccess:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class FeaturePartition:
-    """Party-specific access references to canonical FeatureView data."""
+    """Read-only party access assignments; metadata is not checksum content."""
 
     name: str
-    party_access: dict[int, tuple[FeatureAccess, ...]]
+    party_access: Mapping[int, tuple[FeatureAccess, ...]]
     metadata: Metadata
 
     def __post_init__(self) -> None:
@@ -253,8 +255,8 @@ class FeaturePartition:
             raise TypeError("FeaturePartition name must be a string")
         if not self.name.strip():
             raise ValueError("FeaturePartition name must not be empty")
-        if not isinstance(self.party_access, dict):
-            raise TypeError("FeaturePartition party_access must be a dictionary")
+        if not isinstance(self.party_access, Mapping):
+            raise TypeError("FeaturePartition party_access must be a mapping")
 
         copied_access: dict[int, tuple[FeatureAccess, ...]] = {}
         for party_id, accesses in self.party_access.items():
@@ -281,7 +283,7 @@ class FeaturePartition:
 
         if not isinstance(self.metadata, dict):
             raise TypeError("FeaturePartition metadata must be a dictionary")
-        object.__setattr__(self, "party_access", copied_access)
+        object.__setattr__(self, "party_access", MappingProxyType(copied_access))
         object.__setattr__(self, "metadata", dict(self.metadata))
 
     def access_for_party(self, party_id: int) -> tuple[FeatureAccess, ...]:

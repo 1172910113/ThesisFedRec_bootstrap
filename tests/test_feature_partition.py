@@ -140,6 +140,84 @@ def test_valid_subset_of_fields_access(feature_bundle: DatasetBundle) -> None:
     assert access.feature_names == ("brand",)
 
 
+def test_feature_partition_rejects_assignment_mutations(
+    feature_bundle: DatasetBundle,
+) -> None:
+    party = _party(7, feature_view_names=("item_tabular",))
+    access = FeatureAccess(view_name="item_tabular", feature_names=("brand",))
+    partition = _partition(party.party_id, access)
+    validate_feature_partition(partition, feature_bundle, (party,))
+    checksum_before = feature_partition_checksum(partition)
+
+    with pytest.raises(TypeError):
+        partition.party_access[99] = (access,)
+    with pytest.raises(TypeError):
+        partition.party_access[party.party_id] = ()
+    with pytest.raises(TypeError):
+        del partition.party_access[party.party_id]
+    with pytest.raises(TypeError):
+        partition.access_for_party(party.party_id)[0] = access
+    with pytest.raises(TypeError):
+        access.feature_names[0] = "category"
+
+    validate_feature_partition(partition, feature_bundle, (party,))
+    assert feature_partition_checksum(partition) == checksum_before
+
+
+def test_feature_partition_copies_constructor_inputs(
+    feature_bundle: DatasetBundle,
+) -> None:
+    parties = (_party(7, feature_view_names=("item_tabular",)), _party(11))
+    requested_rows = np.array([0, 4], dtype=np.int64)
+    access = FeatureAccess(view_name="item_tabular", entity_ids=requested_rows)
+    requested_access = {7: (access,), 11: ()}
+    partition = FeaturePartition(
+        name="copied_inputs", party_access=requested_access, metadata={}
+    )
+    validate_feature_partition(partition, feature_bundle, parties)
+    checksum_before = feature_partition_checksum(partition)
+
+    requested_access[99] = (access,)
+    requested_access[7] = ()
+    del requested_access[11]
+    requested_rows[:] = [1, 3]
+
+    assert set(partition.party_access) == {7, 11}
+    assert partition.access_for_party(7) == (access,)
+    assert partition.access_for_party(11) == ()
+    np.testing.assert_array_equal(access.entity_ids, [0, 4])
+    validate_feature_partition(partition, feature_bundle, parties)
+    assert feature_partition_checksum(partition) == checksum_before
+
+
+@pytest.mark.parametrize("rows", [(), (0, 4)], ids=["empty", "subset"])
+def test_feature_access_ids_cannot_be_made_writable(
+    feature_bundle: DatasetBundle,
+    rows: tuple[int, ...],
+) -> None:
+    party = _party(7, feature_view_names=("item_tabular",))
+    access = FeatureAccess(
+        view_name="item_tabular", entity_ids=np.array(rows, dtype=np.int64)
+    )
+    partition = _partition(party.party_id, access)
+    validate_feature_partition(partition, feature_bundle, (party,))
+    checksum_before = feature_partition_checksum(partition)
+    stored_ids = access.entity_ids
+    assert isinstance(stored_ids, np.ndarray)
+    assert stored_ids.ndim == 1
+    assert stored_ids.dtype == np.int64
+
+    with pytest.raises(ValueError, match="read-only"):
+        stored_ids[:] = 2
+    with pytest.raises(ValueError, match="WRITEABLE"):
+        stored_ids.setflags(write=True)
+
+    np.testing.assert_array_equal(stored_ids, np.array(rows, dtype=np.int64))
+    assert not stored_ids.flags.writeable
+    validate_feature_partition(partition, feature_bundle, (party,))
+    assert feature_partition_checksum(partition) == checksum_before
+
+
 def test_missing_whole_view_is_no_access_descriptor(
     feature_bundle: DatasetBundle,
 ) -> None:
@@ -415,6 +493,52 @@ def test_feature_partition_rejects_negative_party_id() -> None:
             party_access={-1: ()},
             metadata={},
         )
+
+
+@pytest.mark.parametrize(
+    "rows, fields, expected_checksum",
+    [
+        (
+            None,
+            None,
+            "99327dd04859e1232f8868683718c1b21327d3c46f45f78656c42c0e32aae9cd",
+        ),
+        (
+            (),
+            (),
+            "0d65e9d22fa64b1ef9f889dea50a9602ddeff245813def9f99541fe259d22aff",
+        ),
+        (
+            (0, 4),
+            ("brand",),
+            "31159190a1b5c2cbf3be50ae12644dd2a2a3704a9b14c587f893efd35df9e895",
+        ),
+        (
+            (0, 2, 4),
+            ("category", "brand"),
+            "245aa8836a5e204264c5bcd07bebaf90aa685aa62f206f83b626ca5b952b09c5",
+        ),
+    ],
+    ids=["all", "empty", "subset", "explicit_full"],
+)
+def test_feature_selection_checksums_match_reviewed_revision(
+    feature_bundle: DatasetBundle,
+    rows: tuple[int, ...] | None,
+    fields: tuple[str, ...] | None,
+    expected_checksum: str,
+) -> None:
+    # Recorded from reviewed commit 5fad8cc before changing storage.
+    party = _party(7, feature_view_names=("item_tabular",))
+    access = FeatureAccess(
+        view_name="item_tabular",
+        entity_ids=None if rows is None else np.array(rows, dtype=np.int64),
+        feature_names=fields,
+    )
+    partition = _partition(party.party_id, access)
+
+    validate_feature_partition(partition, feature_bundle, (party,))
+
+    assert feature_partition_checksum(partition) == expected_checksum
 
 
 def test_feature_partition_checksum_is_order_independent() -> None:

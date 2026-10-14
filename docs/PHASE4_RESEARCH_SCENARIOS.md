@@ -140,7 +140,7 @@ FeatureAccess:
 
 FeaturePartition:
     name: str
-    party_access: dict[int, tuple[FeatureAccess, ...]]
+    party_access: Mapping[int, tuple[FeatureAccess, ...]]
     metadata: Metadata
 ```
 
@@ -155,6 +155,13 @@ three independent levels of visibility without copying feature arrays:
 The partition is a derived experiment scenario object outside
 `DatasetBundle`. It references both bundle view names and actual `party_id`
 values. It does not own interactions, parties, or feature values.
+
+The public access mapping is read-only over a defensive copy, with immutable
+descriptor/field tuples. Selected entity IDs use copied immutable byte-backed
+NumPy `int64` arrays: item writes and re-enabling writes are rejected.
+Constructor-input mutations cannot change the stored access assignments.
+Names and metadata remain excluded from the unchanged assignment checksum;
+metadata is not required to be immutable.
 
 Bundle-aware validation receives the allowed `PartyData` set explicitly, so
 party IDs may be non-contiguous and never imply user IDs. It rejects unknown
