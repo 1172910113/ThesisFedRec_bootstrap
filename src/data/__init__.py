@@ -22,6 +22,7 @@ from src.data.loaders import (
     resolve_data_path,
     resolve_data_root,
 )
+from src.data.ml1m_features import build_ml1m_item_genre_view
 from src.data.negative_sampling import sample_negative_items
 from src.data.partition import build_hfl_partition
 from src.data.preprocess import preprocess_ml1m, preprocess_ml1m_from_root
@@ -37,6 +38,7 @@ __all__ = [
     "PartyData",
     "build_complete_feature_scenario",
     "build_hfl_partition",
+    "build_ml1m_item_genre_view",
     "build_single_view_absence_scenario",
     "feature_partition_checksum",
     "leave_one_out_split",

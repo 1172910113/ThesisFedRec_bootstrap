@@ -543,8 +543,99 @@ The third return value is a derived plain dictionary:
 | `assignment_checksum` | Existing access-assignment checksum |
 
 These counts do not measure nonmissing rows, semantic overlap, privacy, or
-recommendation quality. No canonical feature construction, persistence,
-row/field recipe, configuration expansion, or training integration is added.
+recommendation quality. These recipes add no canonical feature construction,
+persistence, row/field recipe, configuration expansion, or training integration.
+
+### 10.3 Standalone ML1M item genres (separate Phase 4B3 unit)
+
+`src/data/ml1m_features.py` exports one explicit builder through `src.data`:
+
+```python
+def build_ml1m_item_genre_view(
+    bundle: DatasetBundle,
+    *,
+    movies_relative_path: str | Path,
+    data_root: str | Path | None = None,
+) -> FeatureView:
+    ...
+```
+
+The builder returns an unattached canonical `FeatureView` named `item_genres`,
+with `entity_kind="item"` and `modality="tabular"`. Rows follow the existing
+processed item IDs: `entity_ids` is one-dimensional `int64`, `0..N-1`;
+`values` is `float32` with shape `(N, 18)` and multi-hot entries in `{0, 1}`.
+`feature_names` is this fixed lexical tuple from the MovieLens-1M README's
+MOVIES FILE DESCRIPTION, independent of source subsets or interaction splits:
+
+```text
+Action, Adventure, Animation, Children's, Comedy, Crime,
+Documentary, Drama, Fantasy, Film-Noir, Horror, Musical,
+Mystery, Romance, Sci-Fi, Thriller, War, Western
+```
+
+The boolean `(N, 18)` `missing_mask` is entirely false after successful
+validation. An absent genre in valid metadata is an observed zero, not source
+missingness. Missing metadata for any processed item raises with the missing
+count and representative raw MovieIDs; no partial or imputed view is returned.
+Scenario visibility still belongs only in `FeaturePartition`.
+
+Source resolution reuses `resolve_data_path`: explicit `data_root`, otherwise
+`THESISFEDREC_DATA_ROOT`, otherwise repository-local `data/raw`. The movies
+path must be relative and must not escape that root, including via symlinks.
+The builder reads the bytes once, hashes those same bytes with SHA-256, then
+decodes Latin-1. It supports LF, CRLF, and a final record without a newline,
+removing only record terminators rather than normalizing fields or tokens.
+
+Every source row, including metadata-only movies, must have exactly three
+`MovieID::Title::Genres` fields, a positive ASCII-decimal ID without signs or
+whitespace, a nonblank title, and nonempty, unique, exact-case known genre
+tokens separated by `|`. Empty sources, blank/malformed records, duplicate
+parsed MovieIDs (even identical rows), and unknown/empty/repeated tokens fail;
+record errors include line numbers. Leading zeros do not create a separate
+MovieID. The current `item_id_map` is revalidated: raw and processed IDs must
+be built-in integers (not bool, strings, floats, or NumPy scalars), raw IDs
+must be positive, and processed IDs must be a bijection onto `range(N)`.
+Metadata-only movies are validated and counted but never extend this namespace.
+A valid empty namespace returns `(0, 18)` arrays only after validating a
+nonempty source.
+
+Deterministic metadata records builder/version, source-relative path,
+Latin-1 encoding and field format, byte size/SHA-256, fixed vocabulary and
+attribution, multi-hot encoding and row/column order, strict ID/token/duplicate/
+missing-metadata policies, and coverage counts. `counts` includes source
+records, unique metadata items, processed/matched/missing items, metadata-only
+items, genre count, and positive entries. `item_mapping_sha256` hashes the
+exact existing `base/items.jsonl` representation in memory: entries sorted
+by processed ID, each serialized as
+`json.dumps({"raw_id": raw_id, "processed_id": processed_id}, ensure_ascii=False, sort_keys=True) + "\n"`
+with default separators, concatenated and encoded as UTF-8 including trailing
+LF. An empty mapping hashes empty bytes. No cache writer is called. Source
+record order or newline changes can change provenance without changing values.
+This does not change the feature-partition access-assignment checksum.
+
+Every call allocates fresh mutable arrays and metadata and leaves all input
+objects unchanged on success and failure. `FeatureView` remains mutable.
+Attachment is caller-controlled, using a collision-checked copied dictionary:
+
+```python
+from dataclasses import replace
+
+view = build_ml1m_item_genre_view(
+    base, movies_relative_path="ml-1m/ml-1m/movies.dat"
+)
+feature_views = dict(base.feature_views)
+if view.name in feature_views:
+    raise ValueError(f"feature view already exists: {view.name}")
+feature_views[view.name] = view
+derived = replace(base, feature_views=feature_views)
+```
+
+The base bundle's dictionary is unchanged. Existing views and all unchanged
+base objects remain shallow-shared; this is not a deep-copy isolation boundary.
+Default ratings preprocessing still creates no feature views. Neither this
+builder nor attachment changes mappings, splits, sample ownership, models,
+training, or evaluation. No cache or other artifact is written. Schema-`1.0`
+cache saving rejects the derived bundle before creating its cache directory.
 
 ---
 
@@ -691,6 +782,8 @@ their checksums are in-memory scenario objects; no base-cache or derived-cache
 payload is introduced in this phase.
 The first Phase 4B3 whole-view recipes are also in-memory only. They do not
 change schema `1.0` or serialize non-empty feature collections.
+The separately authorized ML1M item-genres builder in Section 10.3 is also
+in-memory only; it does not change default preprocessing or cache behavior.
 
 ---
 
@@ -783,8 +876,9 @@ Phase 4B1 implements the canonical `FeatureView` contract and its in-memory
 `DatasetBundle` integration. Phase 4B2 implements explicit `FeatureAccess`
 and `FeaturePartition` contracts, validation, and deterministic assignment
 checksums. The first Phase 4B3 unit adds only complete selected-view access
-and seeded single-view absence (Section 10.2). Other recipes, severity presets,
-feature materialization, and feature persistence remain future work.
+and seeded single-view absence (Section 10.2). A separate unit adds the
+standalone ML1M item-genres builder (Section 10.3). Other feature builders,
+recipes, severity presets, and feature persistence remain future work.
 `GraphView`, `ContinualView`, VFL, HyFL, and the complete derived-cache layout
 remain documented interfaces only.
 
@@ -800,6 +894,7 @@ src/data/
 ├── contracts.py
 ├── features.py
 ├── feature_scenarios.py  # first Phase 4B3 unit
+├── ml1m_features.py      # standalone item-genres builder
 ├── preprocess.py
 ├── split.py
 ├── negative_sampling.py
@@ -816,6 +911,8 @@ Responsibilities:
   access-assignment checksums; no scenario generation or persistence;
 - `feature_scenarios.py`: complete access and seeded single-view absence over
   existing canonical views, shallow party-summary copies, and assignment counts;
+- `ml1m_features.py`: strict ML1M movies metadata parsing and standalone
+  multi-hot item-genres construction in the existing item namespace; no writes;
 - `preprocess.py`: deterministic ID mapping and basic bundle construction from normalized interaction inputs;
 - `split.py`: deterministic leave-one-out splitting;
 - `negative_sampling.py`: shared negative-item sampling only;

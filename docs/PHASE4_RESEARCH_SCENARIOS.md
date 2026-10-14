@@ -264,6 +264,61 @@ decision in Section 8.2. FedGMF still consumes IDs only, so scenario constructio
 alone is not evidence of a recommendation-quality effect. Multi-view absence,
 unbalanced quotas, partial overlap, and thesis severity labels remain deferred.
 
+### 4.5 Separate standalone ML1M item-genres unit
+
+`build_ml1m_item_genre_view(bundle, *, movies_relative_path, data_root=None)`
+in `src/data/ml1m_features.py`, exported by `src.data`, supplies one real-data
+prerequisite without changing the recipes in Section 4.4. It returns an
+unattached `item_genres` canonical item/tabular view. Explicit attachment to a
+derived bundle uses a collision-checked new view dictionary and
+`dataclasses.replace`; unchanged base objects and existing views stay
+shallow-shared. Default ML1M ratings preprocessing remains feature-free.
+
+The fixed 18-column lexical vocabulary, `float32` multi-hot encoding,
+processed-ID row order, and strict parsing/join rules are specified in
+`DATA_CONTRACT.md` Section 10.3. The builder reads and hashes the same original
+Latin-1 bytes, validates all metadata rows, and records deterministic source,
+mapping, encoding, policy, and coverage metadata. Missing processed-item
+metadata fails rather than becoming an all-zero row. Metadata-only movies
+are validated and counted but do not create processed items. Valid absent
+genres are observed zeros with an all-false source missingness mask;
+scenario-induced hiding remains separate. The returned arrays and metadata
+are fresh and mutable, retaining the existing `FeatureView` contract.
+
+A separate CPU-only real-data acceptance test is opt-in, independent of the
+existing GPU smoke flag. With `thesis-fedrec` activated and
+`THESISFEDREC_DATA_ROOT` pointing to the existing read-only data root, run:
+
+```bash
+THESISFEDREC_RUN_REAL_FEATURES=1 python -m pytest -q -s tests/test_ml1m_features.py::test_real_ml1m_item_genres
+```
+
+Without the opt-in flag this test explicitly skips. Once opted in, missing,
+malformed, or unexpected source data fails rather than skipping or downloading.
+It uses relative paths `ml-1m/ml-1m/ratings.dat` and `ml-1m/ml-1m/movies.dat`,
+minimum 3 interactions/user, `keep_latest` duplicates, `all_observed` implicit
+feedback, and preprocessing seed 2026. Three `grouped_round_robin` parties
+use seed 2026; single-view absence uses `K=1` and seed 2026 separately.
+
+Pinned acceptance expectations (not restrictions in the general builder) are
+171,308 source bytes with SHA-256
+`0140fc2356357c1a851d0f52e893a1e4d3696df632c4141cea8d5bc3d621f0b9`,
+3,883 unique metadata records, 3,706 matched processed items, zero missing,
+and 177 excluded metadata-only movies. The view has shape `(3706, 18)`,
+6,192 positive entries, and an all-false missing mask. Explicit attachment
+and both accepted scenarios must validate: complete access gives 3 available
+party/view pairs; single-view absence gives 2 and one featureless party.
+The test checks repeatability and unchanged base data/sample ownership and
+reports parameters, source/mapping checksums, coverage, and assignment counts.
+
+This validates data-contract compatibility only. FedGMF still uses IDs, not
+these features; there is no recommendation-quality claim. No real caches or
+training runs are created. Schema-`1.0` still rejects non-empty feature views
+before cache-directory creation. Reusable feature persistence requires the
+separate versioning decision in Section 8.2. Additional views, graph builders,
+richer scenarios, feature fusion/imputation, and training integration remain
+deferred.
+
 ## 5. Block 1.2: GraphView and partial-graph scenarios
 
 ### 5.1 Canonical GraphView
