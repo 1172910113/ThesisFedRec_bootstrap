@@ -15,6 +15,7 @@ from src.data.feature_scenarios import (
 )
 from src.data.features import (
     feature_partition_checksum,
+    resolve_party_feature_views,
     validate_feature_partition,
 )
 from src.data.loaders import (
@@ -47,6 +48,7 @@ __all__ = [
     "preprocess_ml1m_from_root",
     "resolve_data_path",
     "resolve_data_root",
+    "resolve_party_feature_views",
     "sample_negative_items",
     "validate_feature_partition",
 ]

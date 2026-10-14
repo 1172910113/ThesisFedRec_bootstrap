@@ -1,4 +1,4 @@
-"""Validation and deterministic identity for feature-access partitions."""
+"""Feature-access validation, assignment identity, and local payload resolution."""
 
 import hashlib
 import json
@@ -8,7 +8,9 @@ import numpy as np
 
 from src.data.contracts import (
     DatasetBundle,
+    FeatureAccess,
     FeaturePartition,
+    FeatureView,
     PartyData,
 )
 
@@ -114,3 +116,175 @@ def feature_partition_checksum(partition: FeaturePartition) -> str:
         sort_keys=True,
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def _validate_referenced_views(
+    bundle: DatasetBundle, partition: FeaturePartition
+) -> None:
+    if not isinstance(bundle.feature_views, dict):
+        raise TypeError("feature_views must be a dictionary")
+    entity_limits = {
+        "user": len(bundle.user_id_map),
+        "item": len(bundle.item_id_map),
+        "interaction": len(bundle.interactions),
+    }
+    referenced_names = {
+        access.view_name
+        for accesses in partition.party_access.values()
+        for access in accesses
+    }
+    for name in sorted(referenced_names):
+        if name not in bundle.feature_views:
+            raise ValueError(
+                f"FeaturePartition references unknown FeatureView {name!r}"
+            )
+        view = bundle.feature_views[name]
+        if not isinstance(view, FeatureView):
+            raise TypeError("referenced feature_views must be FeatureView objects")
+        if name != view.name:
+            raise ValueError("feature_views keys must match their FeatureView names")
+        # Reuse constructor validation in a temporary base-class wrapper. No
+        # canonical object is mutated, and these shared references never escape.
+        FeatureView(
+            name=view.name,
+            entity_kind=view.entity_kind,
+            entity_ids=view.entity_ids,
+            modality=view.modality,
+            values=view.values,
+            feature_names=view.feature_names,
+            missing_mask=view.missing_mask,
+            metadata=view.metadata,
+        )
+        if np.any(view.entity_ids >= entity_limits[view.entity_kind]):
+            raise ValueError(
+                f"FeatureView {name!r} references an out-of-range {view.entity_kind} ID"
+            )
+
+
+def _validate_delivery_dtype(array: np.ndarray, name: str) -> None:
+    # Check both the reported dtype and the backing dtype after stripping a
+    # subclass: a subclass property must not conceal object/metadata references.
+    for dtype in (array.dtype, np.asarray(array).dtype):
+        if (
+            dtype.hasobject
+            or dtype.fields is not None
+            or dtype.subdtype is not None
+            or dtype.metadata is not None
+        ):
+            raise TypeError(f"{name} has unsupported delivery dtype {dtype}")
+
+
+def _copy_selected_array(
+    array: np.ndarray,
+    rows: np.ndarray,
+    columns: np.ndarray | None = None,
+) -> np.ndarray:
+    # Strip subclass state before indexing, and own only the selected storage.
+    plain = np.asarray(array)
+    selected = plain[rows] if columns is None else plain[np.ix_(rows, columns)]
+    return np.array(selected, copy=True, order="C", subok=False)
+
+
+def _resolve_feature_view(view: FeatureView, access: FeatureAccess) -> FeatureView:
+    # Check delivered source dtypes before slicing, even for empty selections.
+    for name in ("entity_ids", "values", "missing_mask"):
+        array = getattr(view, name)
+        if isinstance(array, np.ndarray):
+            _validate_delivery_dtype(array, f"FeatureView {view.name!r} {name}")
+
+    selected_ids = access.entity_ids
+    rows = (
+        np.arange(len(view.entity_ids), dtype=np.intp)
+        if selected_ids is None
+        else np.searchsorted(np.asarray(view.entity_ids), selected_ids)
+    )
+    columns = None
+    feature_names: tuple[str, ...] = ()
+    if view.feature_names:
+        columns = np.array(
+            [
+                index for index, name in enumerate(view.feature_names)
+                if access.feature_names is None or name in access.feature_names
+            ],
+            dtype=np.intp,
+        )
+        feature_names = tuple(view.feature_names[index] for index in columns)
+
+    values = (
+        _copy_selected_array(view.values, rows, columns)
+        if isinstance(view.values, np.ndarray)
+        else tuple(view.values[index] for index in rows)
+    )
+    output_strings = (view.name, view.entity_kind, view.modality, *feature_names)
+    if isinstance(values, tuple):
+        output_strings += values
+    if any(type(value) is not str for value in output_strings):
+        raise TypeError("resolved schema and text must use plain built-in strings")
+
+    return FeatureView(
+        name=view.name,
+        entity_kind=view.entity_kind,
+        entity_ids=_copy_selected_array(view.entity_ids, rows),
+        modality=view.modality,
+        values=values,
+        feature_names=feature_names,
+        missing_mask=(
+            None if view.missing_mask is None
+            else _copy_selected_array(view.missing_mask, rows, columns)
+        ),
+        metadata={},
+    )
+
+
+def resolve_party_feature_views(
+    bundle: DatasetBundle,
+    partition: FeaturePartition,
+    parties: Sequence[PartyData],
+    *,
+    party_id: int,
+) -> dict[str, FeatureView]:
+    """Return detached local projections, never attaching them to the bundle.
+
+    Validate the whole partition's current references/structure; delivery dtype
+    restrictions apply only to the requested party. Rows and columns follow
+    canonical order. Arrays own selected storage; metadata is always fresh/empty.
+    Schema/text string subclasses are rejected if they would be returned.
+
+    Callers must keep canonical data unchanged during resolution and across
+    calls intended to share one source state. There is no cache, locking, atomic
+    multi-party snapshot, or cryptographic privacy guarantee. Provenance and
+    assignment identity remain with the trusted caller, not the local payload.
+    """
+    if not isinstance(bundle, DatasetBundle):
+        raise TypeError("bundle must be a DatasetBundle")
+    if not isinstance(partition, FeaturePartition):
+        raise TypeError("partition must be a FeaturePartition")
+    if not isinstance(parties, Sequence) or isinstance(parties, (str, bytes)):
+        raise TypeError("parties must be a sequence of PartyData objects")
+    if isinstance(party_id, bool) or not isinstance(party_id, int) or party_id < 0:
+        raise ValueError("party_id must be a non-negative Python integer")
+    party_ids: set[int] = set()
+    for party in parties:
+        if not isinstance(party, PartyData):
+            raise TypeError("parties must contain PartyData objects")
+        if (
+            isinstance(party.party_id, bool)
+            or not isinstance(party.party_id, int)
+            or party.party_id < 0
+        ):
+            raise ValueError("roster party IDs must be non-negative Python integers")
+        if party.party_id in party_ids:
+            raise ValueError("supplied parties must have unique party IDs")
+        party_ids.add(party.party_id)
+    if party_id not in party_ids:
+        raise ValueError(f"unknown requested party_id {party_id}")
+
+    _validate_referenced_views(bundle, partition)
+    validate_feature_partition(partition, bundle, parties)
+    resolved: dict[str, FeatureView] = {}
+    for access in sorted(
+        partition.access_for_party(party_id), key=lambda entry: entry.view_name
+    ):
+        view = _resolve_feature_view(bundle.feature_views[access.view_name], access)
+        resolved[view.name] = view
+    return resolved

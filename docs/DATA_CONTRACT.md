@@ -637,6 +637,107 @@ builder nor attachment changes mappings, splits, sample ownership, models,
 training, or evaluation. No cache or other artifact is written. Schema-`1.0`
 cache saving rejects the derived bundle before creating its cache directory.
 
+### 10.4 Detached party-local feature payloads
+
+`src/data/features.py` exports one framework-side resolver through `src.data`:
+
+```python
+def resolve_party_feature_views(
+    bundle: DatasetBundle,
+    partition: FeaturePartition,
+    parties: Sequence[PartyData],
+    *,
+    party_id: int,
+) -> dict[str, FeatureView]:
+    ...
+```
+
+The result is a fresh dictionary ordered lexically by view name. Its
+`FeatureView` objects are detached local projections, not replacements for
+canonical views; they are not attached to the bundle. Trusted framework code
+receives the bundle, assignment, and complete explicit roster; model-side
+code should receive only the resolved local payload. Sample ownership and
+`bundle.parties` never determine feature access.
+
+Validation occurs on every call:
+
+- the roster is a sequence of `PartyData` objects with unique non-negative
+  Python-integer IDs, excluding booleans and NumPy integer scalars; the
+  requested ID follows the same rule and must be in that roster;
+- every canonical view referenced anywhere in the partition must still be
+  a `FeatureView`, with a matching dictionary key/name, valid current
+  structure, and in-range IDs in its processed entity namespace;
+- existing `FeatureView` constructor validation is reused without mutating
+  canonical objects, followed by `validate_feature_partition()` against the
+  complete supplied roster; neither existing public validator is changed;
+- malformed referenced views belonging to another party also fail;
+  unreferenced canonical views need not be inspected;
+- unknown/removed views, rows or fields and inconsistent party summaries
+  fail rather than being repaired, silently dropped, or intersected.
+
+A known featureless party returns `{}` after validation, whether its mapping
+entry is absent or explicitly empty. An unknown requested party raises.
+Selection retains the existing access semantics:
+
+| Assignment | Local result |
+|---|---|
+| No descriptor for a view | No dictionary entry |
+| Rows `None` | All rows currently present in that canonical view |
+| Explicit row IDs | Map processed IDs to canonical row positions; never use IDs as offsets |
+| Empty row array | View remains present with zero rows |
+| Fields `None` | All named columns or the entire unnamed per-row payload |
+| Explicit named fields | Selected columns in canonical column order, independent of selector order |
+| Empty field tuple on a named source | View remains present with shape `(selected_rows, 0)` |
+| Any explicit field selection on an unnamed source | Error, including an empty tuple |
+
+Rows remain in ascending canonical entity-ID order. Unnamed arrays preserve
+their trailing dimensions; text tuples contain only selected strings. Output
+IDs, entity kind, modality, selected feature names, and supported value dtypes
+are preserved. Masks are sliced exactly like values; `missing_mask=None`
+stays `None`. Masked values, zeros, and NaNs are preserved without imputation
+or implicit missingness. Empty rows never bypass field validation, and empty
+fields never bypass row validation. `None` and explicit full selections may
+produce identical payloads while keeping distinct assignment checksums.
+
+IDs, ndarray values, and non-None masks are independent plain NumPy arrays
+with owned selected storage, including full and empty selections. They have
+no source/unselected-buffer `.base` chain. Different calls and parties do not
+share mutable output arrays, array headers, dictionaries, or metadata. Array
+subclass state is stripped before indexing and copying; output field/text
+tuples are ordinary tuples. Emitted schema/text strings must be plain
+built-in strings: string subclasses are rejected if they would be returned.
+Unselected text/field strings are not forwarded. No generic recursive copier
+is used.
+
+Delivery rejects object-containing, structured/record, exceptional subarray,
+and metadata-bearing dtypes, including empty dtype metadata. This applies to
+IDs and masks as well as values, and is checked before slicing even for empty
+selections. It applies only to views being materialized for the requested
+party: structurally valid exceptional dtypes used exclusively by another
+party do not prevent supported local delivery. Canonical `FeatureView`
+acceptance is unchanged.
+
+Each output has fresh `metadata={}`. Canonical metadata is neither forwarded
+nor deep-copied: it may contain global counts, unselected payload references,
+or other information outside the assignment. Source provenance, mapping
+identity, scenario metadata, and assignment checksums remain in trusted caller
+bookkeeping. This adds no provenance framework or serialization.
+
+Canonical views remain mutable. Previous outputs are isolated from later
+source edits, and subsequent calls observe current valid content. `None`
+selects current membership rather than freezing it. Assignment checksums do
+not identify canonical payloads, and resolution is never cached by checksum.
+Callers must keep canonical data unchanged during a call and across calls
+intended to share one source state. There is no locking or atomic multi-party
+snapshot. This is a software delivery boundary, not a cryptographic privacy
+guarantee or protection from code already holding the original bundle.
+
+Resolution adds no recipes, persistence, training, graph functionality, or
+model-side feature consumption. Existing row/field descriptors work directly;
+future row/field scenario constructors may produce those same descriptors.
+Mappings, sample ownership, preprocessing, splits, checksum serialization,
+existing APIs, and base-cache schema `1.0` remain unchanged.
+
 ---
 
 ## 11. GraphView interface
@@ -878,7 +979,9 @@ and `FeaturePartition` contracts, validation, and deterministic assignment
 checksums. The first Phase 4B3 unit adds only complete selected-view access
 and seeded single-view absence (Section 10.2). A separate unit adds the
 standalone ML1M item-genres builder (Section 10.3). Other feature builders,
-recipes, severity presets, and feature persistence remain future work.
+recipes, severity presets, and feature persistence remain future work. A
+further bounded unit resolves explicit party access to detached local feature
+payloads (Section 10.4), without adding model-side consumption.
 `GraphView`, `ContinualView`, VFL, HyFL, and the complete derived-cache layout
 remain documented interfaces only.
 
@@ -907,8 +1010,9 @@ Responsibilities:
 - `contracts.py`: `InteractionTable`, basic bundle/party contracts, the
   concrete feature contracts, other reserved view contracts, and schema
   validation;
-- `features.py`: bundle-aware `FeaturePartition` validation and deterministic
-  access-assignment checksums; no scenario generation or persistence;
+- `features.py`: bundle-aware `FeaturePartition` validation, deterministic
+  access-assignment checksums, and detached party-local payload resolution;
+  no scenario generation or persistence;
 - `feature_scenarios.py`: complete access and seeded single-view absence over
   existing canonical views, shallow party-summary copies, and assignment counts;
 - `ml1m_features.py`: strict ML1M movies metadata parsing and standalone

@@ -319,6 +319,59 @@ separate versioning decision in Section 8.2. Additional views, graph builders,
 richer scenarios, feature fusion/imputation, and training integration remain
 deferred.
 
+### 4.6 Bounded party-local feature resolution
+
+`resolve_party_feature_views(bundle, partition, parties, *, party_id)` in
+`src/data/features.py`, exported by `src.data`, materializes existing access
+assignments as a lexically ordered `dict[str, FeatureView]`. These are detached
+local projections, not new canonical bundle contents or a second payload
+hierarchy. Framework-side resolution is separate from model-side consumption;
+no runner/model integration or new scenario recipe is added.
+
+The complete explicit roster and every canonical view referenced anywhere in
+the partition are revalidated on each call, followed by the existing
+partition validator. This catches stale references and malformed views even
+when owned by another party. Unreferenced views need not be inspected.
+Non-contiguous party IDs are supported; neither user identities, sample
+ownership, nor `bundle.parties` determine access. Known featureless parties
+return an empty dictionary; unknown requested parties fail.
+
+The precise selection and delivery rules are in `DATA_CONTRACT.md` Section
+10.4. Rows are processed-ID selections, not array offsets; selected columns
+follow canonical order. Hidden views, empty rows, and empty fields remain
+distinct. Source masks, including `None`, and masked/NaN values are preserved.
+Arrays own only their selected storage, without source buffer chains or
+subclass state. Returned schema/text strings are plain built-in strings;
+unsupported string subclasses are rejected if they would be emitted.
+
+Object-containing, structured/record, exceptional subarray, and metadata-
+bearing dtypes are rejected for delivered IDs, values, and masks, even for
+empty selections. This delivery restriction is local to the requested
+party, unlike whole-partition structural validation; another party's
+structurally valid exceptional dtype need not block supported delivery.
+Existing canonical constructors and validators retain their public behavior.
+
+Each output has fresh empty metadata rather than forwarding or deep-copying
+canonical metadata. Source/assignment provenance remains with trusted
+framework bookkeeping, not with the local consumer. All mutable output arrays
+and dictionaries are isolated across calls and parties. Immutable strings may
+be shared. No generic copying or provenance framework is introduced.
+
+Canonical data must stay unchanged during a call and across calls intended to
+use a consistent source state. Later valid canonical changes appear in later
+outputs but cannot change earlier copies. The assignment checksum remains
+access identity only; it cannot authorize caching a payload snapshot. No
+locking, atomic multi-party snapshot, or cryptographic privacy guarantee is
+provided, and code already holding the canonical bundle is not constrained.
+
+Existing whole-view recipes and manually specified row/field selections use
+the same resolver. Future row/field recipe generation is separate work.
+Schema `1.0`, preprocessing, IDs, splits, sample ownership, checksum
+serialization, and the frozen Phase 3 path are unchanged. Persistence, graph
+work, richer recipes, and training integration remain deferred. FedGMF still
+consumes IDs only; successful resolution is not a recommendation-quality
+claim. Acceptance uses synthetic CPU tests, with real-data opt-ins disabled.
+
 ## 5. Block 1.2: GraphView and partial-graph scenarios
 
 ### 5.1 Canonical GraphView
