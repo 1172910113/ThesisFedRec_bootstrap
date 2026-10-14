@@ -9,6 +9,10 @@ from src.data.contracts import (
     InteractionTable,
     PartyData,
 )
+from src.data.feature_scenarios import (
+    build_complete_feature_scenario,
+    build_single_view_absence_scenario,
+)
 from src.data.features import (
     feature_partition_checksum,
     validate_feature_partition,
@@ -31,7 +35,9 @@ __all__ = [
     "InteractionSplits",
     "InteractionTable",
     "PartyData",
+    "build_complete_feature_scenario",
     "build_hfl_partition",
+    "build_single_view_absence_scenario",
     "feature_partition_checksum",
     "leave_one_out_split",
     "load_ml1m_ratings",

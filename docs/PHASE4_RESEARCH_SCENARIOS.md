@@ -203,8 +203,9 @@ Scenario-induced hiding remains in `FeaturePartition`. Conflating the two
 would make it impossible to distinguish a naturally absent value from a
 controlled experimental intervention.
 
-Scenario builders must be deterministic under an explicit seed, validate all
-references, and save the complete resolved assignment plus a checksum. Phase
+Randomized scenario builders must be deterministic under an explicit seed and
+validate all references. The first unit returns resolved assignments and their
+checksums in memory; saving them with experiments is a later integration. Phase
 4B does not define or implement thesis-level labels such as `H0`-`H3`,
 `mild`, `moderate`, or `severe`. If later approved, each label must map to
 explicit quantitative scenario parameters; a label alone is never sufficient
@@ -212,6 +213,56 @@ provenance.
 
 No 1.1 fusion, imputation, contrastive objective, collaboration rule, or
 adaptive aggregation belongs in the data layer.
+
+### 4.4 First Phase 4B3 implementation boundary
+
+Only two in-memory whole-view recipes are implemented in
+`src/data/feature_scenarios.py` and exported by `src.data`:
+
+- `build_complete_feature_scenario(bundle, parties, *, view_names, name)`;
+- `build_single_view_absence_scenario(bundle, parties, *, view_names,
+  missing_view, missing_party_count, seed, name)`.
+
+Each returns `(FeaturePartition, tuple[PartyData, ...], dict[str, object])`.
+The full validation rules and statistics keys are in `DATA_CONTRACT.md`
+Section 10.2. Inputs are valid canonical views plus explicit sample-owning
+parties; no synthetic-only flag or hard-coded dataset is used. Tests use
+synthetic in-memory bundles and non-contiguous, grouped-user parties.
+
+The recipes sort actual party IDs numerically and selected view names
+lexically. Complete access uses no randomness. Absence uses a local NumPy
+generator to choose exactly `K` positions without replacement in the sorted
+party list. Input ordering and global RNG state do not influence assignments,
+and construction does not change global RNG state. Valid seeds are Python
+integers in `[0, 2**32)` even for zero/all-party absence; counts range from zero
+through the supplied party count. Booleans are not valid seeds/counts/IDs.
+
+Visible access always has both selectors `None`; hidden views have no
+descriptor. All parties retain mapping entries, including empty tuples.
+Returned party records replace prior coarse feature summaries from the recipe,
+not from an intersection with old summaries. Only `feature_view_names` changes;
+arrays and metadata are shallow-shared rather than deeply copied or frozen.
+The input parties and `bundle.parties` remain untouched, and the returned
+parties remain outside the bundle. Existing validation checks these new
+summaries against the immutable access assignment.
+
+Metadata records recipe/version and canonical parameters, including the seed
+for absence. The existing checksum remains access-configuration identity only,
+excluding names/metadata. Zero absence matches complete access assignments,
+summaries, statistics, and checksum. All-party absence and featureless parties
+are legitimate; zero-row/source-missing views may still be assigned.
+Statistics describe counts of assigned party/view pairs, not source coverage,
+semantic overlap, privacy guarantees, or recommendation benefits.
+
+No ML1M canonical feature builder, feature persistence, row/field slicing
+recipe, graph work, configuration expansion, or training integration belongs
+to this unit. Real ML1M preprocessing still produces empty canonical feature
+collections; feature construction is a separate prerequisite for real-data
+use. Schema-`1.0` base caches continue to reject non-empty feature collections.
+Persisting reusable features later needs the versioned-artifact or migration
+decision in Section 8.2. FedGMF still consumes IDs only, so scenario construction
+alone is not evidence of a recommendation-quality effect. Multi-view absence,
+unbalanced quotas, partial overlap, and thesis severity labels remain deferred.
 
 ## 5. Block 1.2: GraphView and partial-graph scenarios
 

@@ -462,6 +462,90 @@ row, and field access definitions. It is independent of dictionary,
 descriptor, and selected-field input order; scenario names and metadata are
 not part of the access-assignment checksum.
 
+### 10.2 In-memory whole-view scenarios (first Phase 4B3 unit)
+
+`src/data/feature_scenarios.py` exports two explicit functions:
+
+```python
+build_complete_feature_scenario(
+    bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+    *,
+    view_names: Sequence[str],
+    name: str,
+) -> tuple[FeaturePartition, tuple[PartyData, ...], dict[str, object]]
+
+build_single_view_absence_scenario(
+    bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+    *,
+    view_names: Sequence[str],
+    missing_view: str,
+    missing_party_count: int,
+    seed: int,
+    name: str,
+) -> tuple[FeaturePartition, tuple[PartyData, ...], dict[str, object]]
+```
+
+Both accept valid existing canonical views, independently of dataset name.
+They reject empty party/view sequences, invalid element types, duplicate
+party IDs or view names, unknown views, bare string/bytes `view_names`, and
+non-string or blank scenario names. Party IDs follow `FeaturePartition`'s
+non-negative Python-integer rule, excluding booleans and NumPy integers.
+They need not be contiguous and are never renumbered or inferred from users.
+
+Complete access uses no randomness. Single-view absence requires a selected
+`missing_view` and Python-integer count/seed (not booleans, NumPy integers,
+floats, or strings), with `0 <= missing_party_count <= N` and
+`0 <= seed < 2**32`. Seed validation also applies at counts zero and `N`.
+The recipe uses `numpy.random.default_rng(seed).choice(N, size=K,
+replace=False)` over positions in the numerically sorted party list, then
+maps those positions back to the actual IDs. It neither reads nor changes
+global RNG state. Party input order and view input order do not affect results.
+
+Outputs use sorted party IDs and lexically sorted view names, including
+mapping/statistics order. Every supplied party has an explicit mapping entry,
+possibly an empty tuple. Visible descriptors use `FeatureAccess(view_name=...)`
+with both selectors `None`; hiding a view removes its descriptor. Zero absence
+has the same assignment, summaries, statistics, and checksum as complete
+access for the same parties/views, despite different recipe metadata or names.
+All-party absence and featureless parties are valid; no resampling guarantees
+an alternative view. Assigned zero-row or source-missing views remain valid.
+
+Input parties supply sample ownership, not preexisting access restrictions.
+The recipe replaces their coarse `feature_view_names` from the explicit
+selected-view assignment: it neither intersects with previous summaries nor
+retains unselected views. It returns new `PartyData` records changing only
+that field, then calls the existing `validate_feature_partition()` against
+those records. Unchanged arrays and metadata are shared via a shallow copy;
+the returned parties are not deeply immutable or fully independent copies.
+Construction does not change input parties, canonical values/masks, base
+interactions/splits, or `bundle.parties`. The returned tuple stays outside
+the bundle; the immutable access assignment remains a separate object.
+
+Partition metadata contains `recipe` (`complete` or `single_view_absence`),
+`recipe_version: 1`, sorted `party_ids` and `view_names` lists, and, for absence,
+`missing_view`, `missing_party_count`, and `seed`. The unchanged
+`feature_partition_checksum()` continues to identify only access assignments;
+it excludes names/metadata and does not bind canonical payloads or provenance.
+
+The third return value is a derived plain dictionary:
+
+| Key | Meaning |
+|---|---|
+| `party_count` | Number of supplied parties, `N` |
+| `selected_views` | Sorted tuple of explicitly selected view names, size `M` |
+| `visible_view_counts_by_party` | Actual party ID -> assigned-view count, including zero |
+| `visible_party_counts_by_view` | Selected view name -> assigned-party count, including zero |
+| `featureless_party_count` | Parties with zero assigned views in this selected-view universe |
+| `available_party_view_pairs` | `N*M` for complete access; `N*M-K` for single-view absence |
+| `possible_party_view_pairs` | `N*M` |
+| `assignment_checksum` | Existing access-assignment checksum |
+
+These counts do not measure nonmissing rows, semantic overlap, privacy, or
+recommendation quality. No canonical feature construction, persistence,
+row/field recipe, configuration expansion, or training integration is added.
+
 ---
 
 ## 11. GraphView interface
@@ -605,6 +689,8 @@ Phase 4B1 does not change base-cache schema `1.0`. Loading a schema-`1.0` cache 
 Phase 4B2 likewise adds no persistence. `FeaturePartition` instances and
 their checksums are in-memory scenario objects; no base-cache or derived-cache
 payload is introduced in this phase.
+The first Phase 4B3 whole-view recipes are also in-memory only. They do not
+change schema `1.0` or serialize non-empty feature collections.
 
 ---
 
@@ -696,9 +782,11 @@ The initial Phase 2 implementation must not include:
 Phase 4B1 implements the canonical `FeatureView` contract and its in-memory
 `DatasetBundle` integration. Phase 4B2 implements explicit `FeatureAccess`
 and `FeaturePartition` contracts, validation, and deterministic assignment
-checksums. Random scenario builders, severity presets, feature materialization,
-and feature persistence remain future work. `GraphView`, `ContinualView`, VFL,
-HyFL, and the complete derived-cache layout remain documented interfaces only.
+checksums. The first Phase 4B3 unit adds only complete selected-view access
+and seeded single-view absence (Section 10.2). Other recipes, severity presets,
+feature materialization, and feature persistence remain future work.
+`GraphView`, `ContinualView`, VFL, HyFL, and the complete derived-cache layout
+remain documented interfaces only.
 
 ---
 
@@ -711,6 +799,7 @@ src/data/
 ├── __init__.py
 ├── contracts.py
 ├── features.py
+├── feature_scenarios.py  # first Phase 4B3 unit
 ├── preprocess.py
 ├── split.py
 ├── negative_sampling.py
@@ -725,6 +814,8 @@ Responsibilities:
   validation;
 - `features.py`: bundle-aware `FeaturePartition` validation and deterministic
   access-assignment checksums; no scenario generation or persistence;
+- `feature_scenarios.py`: complete access and seeded single-view absence over
+  existing canonical views, shallow party-summary copies, and assignment counts;
 - `preprocess.py`: deterministic ID mapping and basic bundle construction from normalized interaction inputs;
 - `split.py`: deterministic leave-one-out splitting;
 - `negative_sampling.py`: shared negative-item sampling only;
