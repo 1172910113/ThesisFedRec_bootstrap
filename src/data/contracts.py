@@ -204,42 +204,60 @@ class FeatureView:
             raise TypeError("FeatureView metadata must be a dictionary")
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass(frozen=True, slots=True, kw_only=True, init=False)
 class FeatureAccess:
-    """Frozen row/field selection with IDs backed by immutable bytes."""
+    """Frozen selection exposing independent NumPy views of immutable ID bytes."""
 
     view_name: str
-    entity_ids: np.ndarray | None = None
+    _entity_ids_bytes: bytes | None = field(repr=False)
     feature_names: tuple[str, ...] | None = None
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.view_name, str):
+    def __init__(
+        self,
+        *,
+        view_name: str,
+        entity_ids: np.ndarray | None = None,
+        feature_names: tuple[str, ...] | None = None,
+    ) -> None:
+        if not isinstance(view_name, str):
             raise TypeError("FeatureAccess view_name must be a string")
-        if not self.view_name.strip():
+        if not view_name.strip():
             raise ValueError("FeatureAccess view_name must not be empty")
 
-        if self.entity_ids is not None:
-            _validate_sorted_unique("FeatureAccess entity_ids", self.entity_ids)
-            if np.any(self.entity_ids < 0):
+        if entity_ids is not None:
+            _validate_sorted_unique("FeatureAccess entity_ids", entity_ids)
+            if np.any(entity_ids < 0):
                 raise ValueError("FeatureAccess entity_ids must be non-negative")
-            # Immutable backing prevents callers from re-enabling NumPy writes.
-            entity_ids = np.frombuffer(self.entity_ids.tobytes(), dtype=np.int64)
-            object.__setattr__(self, "entity_ids", entity_ids)
 
-        if self.feature_names is not None:
-            if not isinstance(self.feature_names, tuple) or any(
+        if feature_names is not None:
+            if not isinstance(feature_names, tuple) or any(
                 not isinstance(feature_name, str)
-                for feature_name in self.feature_names
+                for feature_name in feature_names
             ):
                 raise TypeError(
                     "FeatureAccess feature_names must be a tuple of strings or None"
                 )
-            if any(not name.strip() for name in self.feature_names):
+            if any(not name.strip() for name in feature_names):
                 raise ValueError(
                     "FeatureAccess feature_names must not contain empty names"
                 )
-            if len(set(self.feature_names)) != len(self.feature_names):
+            if len(set(feature_names)) != len(feature_names):
                 raise ValueError("FeatureAccess feature_names must be unique")
+
+        object.__setattr__(self, "view_name", view_name)
+        object.__setattr__(self, "feature_names", feature_names)
+        object.__setattr__(
+            self,
+            "_entity_ids_bytes",
+            None if entity_ids is None else entity_ids.tobytes(),
+        )
+
+    @property
+    def entity_ids(self) -> np.ndarray | None:
+        """Return a fresh read-only array header without copying the ID buffer."""
+        if self._entity_ids_bytes is None:
+            return None
+        return np.frombuffer(self._entity_ids_bytes, dtype=np.int64)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

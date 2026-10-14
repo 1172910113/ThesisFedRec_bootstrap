@@ -218,6 +218,43 @@ def test_feature_access_ids_cannot_be_made_writable(
     assert feature_partition_checksum(partition) == checksum_before
 
 
+@pytest.mark.parametrize("changed_attribute", ["dtype", "shape"])
+def test_feature_access_array_headers_are_independent(
+    feature_bundle: DatasetBundle,
+    changed_attribute: str,
+) -> None:
+    party = _party(7, feature_view_names=("item_tabular",))
+    original_ids = np.array([0, 4], dtype=np.int64)
+    access = FeatureAccess(view_name="item_tabular", entity_ids=original_ids)
+    partition = _partition(party.party_id, access)
+    validate_feature_partition(partition, feature_bundle, (party,))
+    checksum_before = feature_partition_checksum(partition)
+    changed_ids = access.entity_ids
+    other_ids = access.entity_ids
+    assert changed_ids is not None
+    assert other_ids is not None
+
+    if changed_attribute == "dtype":
+        changed_ids.dtype = np.int32
+    else:
+        changed_ids.shape = (1, 2)
+
+    reread_ids = access.entity_ids
+    assert reread_ids is not None
+    for ids in (other_ids, reread_ids):
+        assert ids.ndim == 1
+        assert ids.dtype == np.int64
+        np.testing.assert_array_equal(ids, original_ids)
+        assert not ids.flags.writeable
+    assert changed_ids is not other_ids
+    assert reread_ids is not other_ids
+    assert reread_ids is not changed_ids
+    # Reads allocate independent headers, not copies of the selection buffer.
+    assert np.shares_memory(other_ids, reread_ids)
+    validate_feature_partition(partition, feature_bundle, (party,))
+    assert feature_partition_checksum(partition) == checksum_before
+
+
 def test_missing_whole_view_is_no_access_descriptor(
     feature_bundle: DatasetBundle,
 ) -> None:
@@ -473,16 +510,26 @@ def test_party_feature_summary_must_match_detailed_access(
 
 
 @pytest.mark.parametrize(
-    "entity_ids",
+    "entity_ids, error",
     [
-        np.array([-1], dtype=np.int64),
-        np.array([2, 1], dtype=np.int64),
+        (np.array([-1], dtype=np.int64), ValueError),
+        (np.array([2, 1], dtype=np.int64), ValueError),
+        (np.array([1, 1], dtype=np.int64), ValueError),
+        (np.array(1, dtype=np.int64), ValueError),
+        (np.array([[0, 4]], dtype=np.int64), ValueError),
+        (np.array([0, 4], dtype=np.int32), TypeError),
+        (np.array([0.0, 4.0]), TypeError),
+        ([0, 4], TypeError),
+    ],
+    ids=[
+        "negative", "unsorted", "duplicate", "scalar", "2d", "int32", "float", "list"
     ],
 )
 def test_feature_access_rejects_invalid_entity_ids(
-    entity_ids: np.ndarray,
+    entity_ids: object,
+    error: type[Exception],
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(error):
         FeatureAccess(view_name="item_tabular", entity_ids=entity_ids)
 
 

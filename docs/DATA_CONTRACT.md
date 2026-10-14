@@ -424,11 +424,17 @@ are non-negative but need not be contiguous and never imply user IDs.
 Access assignments are read-only through the public configuration interface.
 Construction defensively copies the party mapping and exposes a read-only
 mapping over that copy; each party's descriptors and each field selection
-remain immutable tuples. Explicit entity selections remain one-dimensional
-NumPy `int64` arrays, copied into immutable byte-backed storage so both item
-assignment and `setflags(write=True)` are rejected. Mutating constructor
-inputs cannot change stored assignments. `None`, empty selections, and
-explicit full selections retain their distinct meanings and checksums.
+remain immutable tuples. Constructor ID arrays are validated before their
+contents are copied once into immutable bytes. The read-only `entity_ids`
+property returns a fresh one-dimensional NumPy `int64` view on every access;
+no ndarray object/header is stored or shared between reads. These views share
+the immutable backing bytes without copying or reserializing the ID buffer.
+Changing one returned view's shape or dtype cannot affect other views or the
+stored selection; item assignment and `setflags(write=True)` are rejected.
+Mutating constructor inputs cannot change stored assignments. `None` remains
+the full-access sentinel, distinct from empty bytes for no selected rows.
+`None`, empty selections, and explicit full selections retain their distinct
+meanings and checksums.
 Metadata remains a plain dictionary and is not part of this immutability or
 access-checksum guarantee.
 

@@ -157,8 +157,12 @@ The partition is a derived experiment scenario object outside
 values. It does not own interactions, parties, or feature values.
 
 The public access mapping is read-only over a defensive copy, with immutable
-descriptor/field tuples. Selected entity IDs use copied immutable byte-backed
-NumPy `int64` arrays: item writes and re-enabling writes are rejected.
+descriptor/field tuples. Selected entity IDs are stored as immutable bytes
+after constructor validation. Each `entity_ids` read returns an independent
+one-dimensional NumPy `int64` view over the same bytes, without copying the
+buffer or exposing a stored ndarray header. Changing a returned view's shape
+or dtype cannot affect other reads; item writes and re-enabling writes are
+rejected. `None` remains the distinct full-access sentinel.
 Constructor-input mutations cannot change the stored access assignments.
 Names and metadata remain excluded from the unchanged assignment checksum;
 metadata is not required to be immutable.
