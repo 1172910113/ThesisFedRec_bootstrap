@@ -58,8 +58,8 @@ The validated Phase 3 baseline already provides:
 
 The relevant existing data seams are deliberately incomplete:
 
-- Phase 4B1 makes `DatasetBundle.feature_views` a concrete canonical contract,
-  while `graph_views` remains a `dict[str, object]` placeholder;
+- Phase 4B1 makes `DatasetBundle.feature_views` a concrete canonical contract;
+  Phase 4C1 similarly makes `graph_views` a validated `dict[str, GraphView]`;
 - the current empty `DatasetBundle.continual_views` placeholder must not be
   promoted into canonical dataset content; a future `ContinualView` is a
   separately constructed scenario object;
@@ -376,8 +376,10 @@ claim. Acceptance uses synthetic CPU tests, with real-data opt-ins disabled.
 
 ### 5.1 Canonical GraphView
 
-Raw relation structure belongs in the common data layer. `GraphView` should
-become the concrete typed form already reserved by the data contract:
+Phase 4C1 implements only the canonical in-memory graph contract, bundle
+validation, public export, and schema-`1.0` cache protection. `GraphView` is a
+mutable, keyword-only, slotted dataclass in `src/data/contracts.py`, exported
+by `src.data`:
 
 ```python
 GraphView:
@@ -385,44 +387,74 @@ GraphView:
     node_raw_ids: tuple[RawId, ...]
     node_type_ids: IntArray
     node_type_names: tuple[str, ...]
-    edge_index: numpy.ndarray
+    edge_index: numpy.ndarray  # int64, shape (2, E)
     relation_ids: IntArray
     relation_names: tuple[str, ...]
-    user_to_node: IntArray | None
-    item_to_node: IntArray | None
-    edge_weights: FloatArray | None
-    node_features: numpy.ndarray | None
-    node_feature_names: tuple[str, ...]
     metadata: Metadata
+    user_to_node: IntArray | None = None
+    item_to_node: IntArray | None = None
+
+    validate() -> None
 ```
 
 Graph-local `node_id` is the row index in `node_raw_ids`, from zero through
 `N-1`; a redundant `node_ids` array is unnecessary. Graph-local `edge_id` is
 the column index in `edge_index`, from zero through `E-1`. Canonical node and
-edge order must therefore be deterministic.
+edge order is preserved exactly. Future builders must establish deterministic
+ordering; the contract does not sort or renumber inputs.
 
 Required invariants include:
 
-- `edge_index` has shape `(2, E)` and contains in-range graph node IDs;
-- `node_type_ids` has length `N`, while `relation_ids` has length `E`;
-- type and relation IDs are contiguous and index their name tuples;
-- `user_to_node` and `item_to_node`, when present, align to the complete
-  recommendation namespaces and use `-1` for no mapping;
-- weights and node-feature rows align to edges and nodes respectively;
-- metadata records directedness, inverse-edge policy, self-loops,
-  deduplication, source files, construction seed, and source interaction
-  splits;
-- validation/test interactions never leak into a training graph unless an
-  explicitly approved protocol records that deviation.
+- Raw IDs are exact built-in strings or integers, without coercion or
+  positivity/nonblank restrictions. Booleans, NumPy scalars, and subclasses
+  fail. Identity is unique by node type and raw-ID type/value: `7` and `"7"`
+  differ, and the same raw ID may occur under different types.
+- Type and relation vocabularies are tuples of unique nonblank strings; their
+  positions define IDs. Observed IDs may repeat or omit vocabulary entries.
+  No reserved type labels or automatic raw-ID joins are imposed.
+- `node_type_ids` and `relation_ids` are one-dimensional `int64` arrays of
+  length `N` and `E` respectively, with in-range vocabulary IDs. `edge_index`
+  is `int64`, shape `(2, E)`, source then destination, with endpoints in `[0, N)`.
+- Exact duplicate `(source, relation, destination)` triples fail, including
+  nonadjacent duplicates. Explicit self-loops, reverse arcs, and different
+  relations on the same endpoints are retained; no edges are generated.
+- Empty graphs and isolated nodes are valid. Empty/unused vocabularies are
+  permitted when unreferenced, and an empty edge array has shape `(2, 0)`.
+- Optional mappings are one-dimensional `int64`, with entries `-1` or valid
+  node indices. At bundle construction their lengths must match the complete
+  processed user/item namespaces, not a party subset. Repeated targets are
+  valid references, not a merge or a proof of entity equivalence/bijection.
+  `None`, all-`-1`, and empty mappings remain distinct.
 
-`DatasetBundle.graph_views` becomes `dict[str, GraphView]`, keyed by the
-view's name. A bundle may carry multiple relation sources, but graph-learning
-state never belongs in `GraphView`.
+`DatasetBundle.graph_views` is `dict[str, GraphView]`, default-empty and keyed
+by view name. Construction checks registry types, calls each view's
+`validate()`, and checks key/name agreement and mapping lengths. A bundle may
+carry multiple sources; graph-learning state never belongs in `GraphView`.
+The precise structural rules are in `DATA_CONTRACT.md` Section 11.
+
+Arrays and metadata remain mutable shared references, consistently with
+canonical data rather than immutable access assignments. Construction and
+`validate()` check current structure without copying or normalizing. Later
+mutations require explicit revalidation; bundle reattachment revalidates too.
+There is no isolation, immutable snapshot, or concurrent-mutation guarantee.
+
+Structural checks cannot establish semantic alignment, ownership, or leakage
+safety. Metadata is a dictionary, not a verified provenance declaration.
+Future builders must record and enforce construction/source-split policies;
+metadata alone cannot prove that held-out interactions did not enter a graph.
+
+Weights, node features, graph access/partitions, builders/resolvers, scenario
+generators, persistence, models, and training integration are deferred. C1
+needs neither unfinished feature row/field recipes nor feature persistence.
 
 ### 5.2 Party-local incomplete graphs
 
-`PartyData.graph_view_names` can say which canonical graphs a party knows,
-but it cannot express `G_c subset of G`. The minimum derived contracts are:
+This subsection describes **future interfaces, not Phase 4C1 APIs**.
+`PartyData.graph_view_names` is only a coarse summary, not `G_c subset of G`.
+The unchanged HFL builder defaults these names to all registered graphs in
+sorted order unless overridden. Those defaults neither enforce visibility
+nor authorize delivery of private graph payloads. The proposed derived
+contracts are:
 
 ```python
 GraphAccess:
@@ -455,6 +487,15 @@ must match the names in the party's detailed access entries. The resolved
 `GraphPartition`, seed, overlap statistics, visible counts, and checksum are
 run metadata. Two parties may reference the same graph and overlapping edge
 IDs without implying shared sample ownership.
+
+A common representation does not require gathering every party's private
+graph into a centralized bundle. Source graphs, future party-visible
+projections, and explicitly labeled offline oracle data must remain distinct.
+Graph-local indices and private auxiliary raw identifiers are not implicitly
+shared identities across owners or views. Future builders and delivery
+mechanisms must establish authorized alignment and prevent held-out
+interaction leakage; structural validation and metadata declarations do not
+prove either. No cryptographic privacy guarantee is claimed.
 
 Graph preprocessing may eventually live in `src/data/graph.py`; deterministic
 partial-graph scenario construction may live beside it in
@@ -630,7 +671,7 @@ a synthetic one-stage manager merely for conceptual uniformity.
 |---|---|---|
 | Interactions, splits, ID maps | Base `DatasetBundle` | Stable dataset identity used by every method |
 | Canonical `FeatureView` values | `DatasetBundle.feature_views` | Dataset information aligned to base namespaces |
-| Canonical raw `GraphView` structure | `DatasetBundle.graph_views` | Raw relations are shared data, not learned method state |
+| Canonical raw `GraphView` structure | `DatasetBundle.graph_views` | Common source representation, not learned state or permission to share private relations |
 | Continual stage membership/reference definitions | Derived `ContinualView` outside the bundle | Multiple experiment protocols may reference the same canonical interaction IDs |
 | Sample ownership | `PartyData` interaction/user/item fields | Already stable and independent of feature visibility |
 | Coarse visible-view names | Existing `PartyData` name tuples | Backward-compatible summary and simple whole-view scenarios |
@@ -660,6 +701,13 @@ a synthetic one-stage manager merely for conceptual uniformity.
    persisted, are scenario artifacts rather than canonical bundle content.
 6. Save resolved scenario assignments and checksums with experiment results,
    not in the immutable base manifest.
+
+The canonical feature and graph contracts in steps 1-2 are implemented by
+Phases 4B1 and 4C1 respectively. Schema-`1.0` loading still returns empty
+feature/graph dictionaries. Saving rejects nonempty collections before
+directory creation or file writes, including a registered empty graph, and
+leaves an existing cache unchanged on rejection. No graph persistence is
+implemented by C1.
 
 The existing ML1M base-cache schema may remain `1.0` during the initial Phase
 4B/4C synthetic contract work only if all of the following remain true:
@@ -909,6 +957,11 @@ rather than designed around FedGMF alone.
   deliberate base-cache migration.
 
 ### Phase 4C — GraphView and partial-graph scenarios
+
+The first implemented unit, **Phase 4C1**, is limited to `GraphView`, necessary
+`DatasetBundle` validation, exports, schema-`1.0` cache rejection, documentation,
+and synthetic contract/regression tests. The broader deliverables and access/
+leakage acceptance checks below remain future work, not claims about C1.
 
 - Likely files: `src/data/contracts.py`, `src/data/graph.py`,
   `src/data/graph_scenarios.py`, exports, tests, config validation, and the

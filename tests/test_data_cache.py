@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from src.data.cache import load_base_cache, save_base_cache
-from src.data.contracts import DatasetBundle, FeatureView
+from src.data.contracts import DatasetBundle, FeatureView, GraphView
 
 
 def test_base_cache_round_trip(
@@ -36,6 +36,9 @@ def test_base_cache_round_trip(
     assert loaded.metadata == processed_bundle.metadata
     assert processed_bundle.feature_views == {}
     assert loaded.feature_views == {}
+    assert processed_bundle.graph_views == {}
+    assert loaded.graph_views == {}
+    assert manifest["schema_version"] == "1.0"
 
     for name in (
         "interaction_ids",
@@ -121,3 +124,61 @@ def test_schema_1_base_cache_rejects_non_empty_feature_views(
         save_base_cache(bundle, cache_path)
 
     assert not cache_path.exists()
+
+
+@pytest.mark.parametrize("empty_graph", [False, True])
+@pytest.mark.parametrize("existing_cache", [False, True])
+def test_schema_1_base_cache_rejects_all_registered_graphs_before_writes(
+    processed_bundle: DatasetBundle,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    empty_graph: bool,
+    existing_cache: bool,
+) -> None:
+    view = GraphView(
+        name="relations",
+        node_raw_ids=() if empty_graph else ("first", "second"),
+        node_type_ids=np.empty(0, dtype=np.int64) if empty_graph else np.array([0, 0]),
+        node_type_names=("entity",),
+        edge_index=(
+            np.empty((2, 0), dtype=np.int64)
+            if empty_graph else np.array([[0], [1]], dtype=np.int64)
+        ),
+        relation_ids=np.empty(0, dtype=np.int64) if empty_graph else np.array([0]),
+        relation_names=("related",),
+        metadata={},
+    )
+    bundle = replace(processed_bundle, graph_views={view.name: view})
+    cache_path = tmp_path / "processed"
+    if existing_cache:
+        save_base_cache(processed_bundle, cache_path)
+    before = {
+        path.relative_to(cache_path): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in cache_path.rglob("*") if path.is_file()
+    }
+    directories_before = {
+        path.relative_to(cache_path) for path in cache_path.rglob("*") if path.is_dir()
+    }
+
+    def reject_filesystem_call(*args: object, **kwargs: object) -> None:
+        pytest.fail("graph rejection must precede directory creation or opening files")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "mkdir", reject_filesystem_call)
+        patch.setattr(Path, "open", reject_filesystem_call)
+        with pytest.raises(
+            ValueError,
+            match="schema 1.0 cannot persist non-empty GraphView payloads",
+        ):
+            save_base_cache(bundle, cache_path)
+
+    after = {
+        path.relative_to(cache_path): (path.read_bytes(), path.stat().st_mtime_ns)
+        for path in cache_path.rglob("*") if path.is_file()
+    }
+    directories_after = {
+        path.relative_to(cache_path) for path in cache_path.rglob("*") if path.is_dir()
+    }
+    assert after == before
+    assert directories_after == directories_before
+    assert cache_path.exists() is existing_cache

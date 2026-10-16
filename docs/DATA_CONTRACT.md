@@ -38,7 +38,11 @@ Arrays containing IDs are sorted unless their order has documented semantic mean
 
 ## 2. DatasetBundle
 
-`DatasetBundle` is the in-memory assembly of one processed base dataset, zero or one selected federation partition, and its requested canonical data views. Canonical `FeatureView` data belongs to the bundle; party-specific feature visibility remains a separate partition/scenario concern.
+`DatasetBundle` is the in-memory assembly of one processed base dataset, zero
+or one selected federation partition, and its requested canonical data views.
+Canonical `FeatureView` and `GraphView` data belong to the bundle; party-specific
+visibility remains a separate partition/scenario concern. `GraphView` is a
+concrete in-memory contract as of Phase 4C1, not a graph-delivery or learning API.
 
 ```python
 DatasetBundle:
@@ -212,6 +216,11 @@ Rules:
 - feature and graph data are referenced by name rather than copied into each party;
 - empty interaction arrays are permitted for future feature-only VFL parties;
 - metadata may describe party grouping or controlled heterogeneity but must not hide required sample, feature, or label ownership.
+
+The existing HFL builder defaults `graph_view_names` to all registered graph
+names in sorted order unless explicitly overridden. These are coarse summaries
+only: they do not enforce visibility or authorize delivery of private graph
+payloads. Phase 4C1 does not change this behavior or add graph-access validation.
 
 ---
 
@@ -742,7 +751,9 @@ existing APIs, and base-cache schema `1.0` remain unchanged.
 
 ## 11. GraphView interface
 
-`GraphView` is retained as a future interface. Graph builders are not part of the initial Phase 2 implementation.
+Phase 4C1 implements `GraphView` in `src/data/contracts.py` and exports it
+through `src.data`. It is a mutable, keyword-only, slotted dataclass. The
+eight fields before the optional mappings below are required:
 
 ```python
 GraphView:
@@ -752,32 +763,85 @@ GraphView:
     node_type_ids: IntArray
     node_type_names: tuple[str, ...]
 
-    edge_index: NumPy int64 array
+    edge_index: NumPy int64 array  # shape (2, E): source row, destination row
     relation_ids: IntArray
     relation_names: tuple[str, ...]
-
-    user_to_node: IntArray | None
-    item_to_node: IntArray | None
-
-    edge_weights: FloatArray | None
-    node_features: NumPy array | None
-    node_feature_names: tuple[str, ...]
-
     metadata: Metadata
+
+    user_to_node: IntArray | None = None
+    item_to_node: IntArray | None = None
+
+    validate() -> None
 ```
 
-Rules:
+Structural rules checked at construction and by `validate()`:
 
-- graph node IDs are indices into `node_raw_ids`;
-- `node_type_ids` contains one value per node;
-- `edge_index` has shape `(2, number_of_edges)`;
-- `relation_ids` contains one value per edge;
-- relation and node-type IDs are contiguous from zero;
-- user/item-to-node arrays use `-1` when no corresponding graph node exists;
-- a PKGRec-compatible graph provides `item_to_node`;
-- metadata records directedness, inverse edges, self-loops, deduplication, source splits, and construction rules;
-- validation and test interactions do not enter a training graph unless an explicit experiment protocol permits and records this;
-- PKGRec propagation, relation learning, and graph objectives remain method-owned.
+- `name` is a nonblank string and `metadata` is a dictionary. Metadata contents
+  are not serialized or validated for provenance or leakage by this contract.
+- Graph-local node IDs are positions `0..N-1` in `node_raw_ids`; graph-local
+  edge IDs are column positions `0..E-1` in `edge_index`. Input node, edge,
+  and vocabulary order is preserved, never sorted, renumbered, or normalized.
+  Future builders are responsible for deterministic construction order.
+- `node_raw_ids` is a tuple of exact built-in `str` or `int` values. Booleans,
+  NumPy scalars, subclasses, and other types are rejected without coercion.
+  These opaque IDs may be negative integers or empty/whitespace strings.
+- Node identity is unique by `(node_type_id, Python raw-ID type, raw-ID value)`.
+  Integer `7` differs from string `"7"`; equal raw IDs under different node
+  types are valid.
+- `node_type_names` and `relation_names` are tuples of unique nonblank strings.
+  Their positions define contiguous vocabularies, not an obligation to observe
+  every entry. Observed type/relation arrays may repeat or omit IDs. Empty
+  vocabularies are valid when no array references them; unused entries are kept.
+- `node_type_ids` is a one-dimensional `int64` array of length `N`, bounded by
+  the node-type vocabulary. `edge_index` is `int64` with shape `(2, E)` and
+  endpoints in `[0, N)`. `relation_ids` is one-dimensional `int64`, length `E`,
+  with IDs in the relation vocabulary. Negative indices are invalid here.
+- Exact duplicate `(source, relation, destination)` triples are rejected,
+  including nonadjacent duplicates, not silently deduplicated. Explicit
+  self-loops, reverse arcs, and different relations between the same endpoints
+  are valid. No self-loops or inverse edges are added automatically.
+- Empty graphs and isolated nodes are valid. An empty graph may retain unused
+  type/relation vocabularies; its edge array still has shape `(2, 0)`.
+- Each optional mapping is `None` or a one-dimensional `int64` array whose
+  entries are `-1` (no corresponding node) or graph-local node IDs. Repeated
+  targets are valid alignment references, not proof of entity equivalence or
+  a bijection. No reserved node-type labels or automatic raw-ID joins apply.
+
+`DatasetBundle.graph_views` is `dict[str, GraphView]`, defaulting to an empty
+dictionary. Bundle construction checks dictionary/key/value types, calls each
+view's `validate()` on its current fields, requires key/name agreement, and
+requires non-None mapping lengths to equal the **complete** corresponding
+processed user/item namespace. Position `i` in a mapping refers to processed
+entity ID `i`, never a party-local position. `None` (mapping unavailable), an
+all-`-1` mapping (no entities mapped), and an empty array remain distinct; an
+empty mapping is valid in a bundle only for an empty corresponding namespace.
+Graph attachment does not change base IDs, splits, or sample ownership.
+
+Arrays and metadata are retained by reference, without copying or freezing.
+Fields can be reassigned, and callers can mutate their array contents/headers
+and dictionaries. `validate()` reruns all structural checks on current field
+values without repairing or modifying them. Bundle construction/reattachment
+revalidates, but later in-place edits do not trigger automatic validation.
+Consumers must revalidate current data and keep it stable during use; there is
+no access isolation, immutable snapshot, or concurrent-mutation guarantee.
+
+The common representation does not require centralized access to every
+party's private relations. Source graph data, future party-visible projections,
+and explicitly labeled offline oracle graphs are distinct. Graph-local IDs
+and private auxiliary raw IDs must not be implicitly promoted to shared
+identities across owners or graphs. Structural validation cannot prove semantic
+joins, ownership, permission to share, or absence of held-out interaction
+leakage. Metadata declarations alone are not such proof. Future builders and
+access mechanisms must enforce source/protocol restrictions: validation/test
+interactions must not enter a training graph unless an explicitly approved
+experiment protocol permits and records this.
+
+Deferred, not Phase 4C1 fields or APIs: edge weights, node features and feature
+names, `GraphAccess`, `GraphPartition`, builders, resolvers, graph checksums,
+scenario generation, persistence, and training integration. A future
+PKGRec-compatible builder may require `item_to_node`; the canonical contract
+does not require it universally. PKGRec propagation, relation learning, and
+graph objectives remain method-owned.
 
 ---
 
@@ -878,6 +942,13 @@ The initial Phase 2 implementation only needs `manifest.json` and the `base/` ar
 
 Phase 4B1 does not change base-cache schema `1.0`. Loading a schema-`1.0` cache reconstructs a bundle with an empty `feature_views` collection. The schema-`1.0` writer accepts empty feature collections only and explicitly rejects a bundle containing canonical `FeatureView` payloads rather than silently dropping them. Persisting such payloads requires a future independently versioned derived-view artifact or a deliberate base-cache schema migration.
 
+Phase 4C1 likewise keeps schema `1.0` and loads empty `graph_views`. The
+writer rejects every nonempty graph collection, including a registered
+zero-node/zero-edge graph, before creating directories or writing any files.
+Rejection leaves an existing cache unchanged. No graph payload is silently
+dropped or serialized under schema `1.0`; future graph persistence requires
+an independently versioned derived artifact or a deliberate base migration.
+
 Phase 4B2 likewise adds no persistence. `FeaturePartition` instances and
 their checksums are in-memory scenario objects; no base-cache or derived-cache
 payload is introduced in this phase.
@@ -941,7 +1012,7 @@ Creation time and machine hostname may be recorded for auditing but do not affec
 | `FeatureView` | All fields except mask | `missing_mask` |
 | `FeatureAccess` | `view_name` | `entity_ids` and `feature_names`; `None` means all canonical rows or fields |
 | `FeaturePartition` | All fields | `party_access` may be empty |
-| `GraphView` | Names, nodes, node types, edges, relations, metadata | User/item mappings, weights, and node features |
+| `GraphView` | `name`, `node_raw_ids`, `node_type_ids`, `node_type_names`, `edge_index`, `relation_ids`, `relation_names`, `metadata` | `user_to_node` and `item_to_node` default to `None`; weights/node features are deferred |
 | `ContinualStage` | All fields | Arrays may be empty only when documented |
 | `ContinualView` | All fields | None |
 
@@ -982,8 +1053,11 @@ standalone ML1M item-genres builder (Section 10.3). Other feature builders,
 recipes, severity presets, and feature persistence remain future work. A
 further bounded unit resolves explicit party access to detached local feature
 payloads (Section 10.4), without adding model-side consumption.
-`GraphView`, `ContinualView`, VFL, HyFL, and the complete derived-cache layout
-remain documented interfaces only.
+Phase 4C1 adds only the canonical in-memory `GraphView`, structural and
+bundle-context validation, exports, and base-cache rejection of graph payloads.
+Graph access, builders, resolvers, and persistence remain future work.
+`ContinualView`, VFL, HyFL, and the complete derived-cache layout remain
+documented interfaces only.
 
 ---
 
@@ -1008,7 +1082,7 @@ src/data/
 Responsibilities:
 
 - `contracts.py`: `InteractionTable`, basic bundle/party contracts, the
-  concrete feature contracts, other reserved view contracts, and schema
+  concrete feature and graph contracts, other reserved view contracts, and schema
   validation;
 - `features.py`: bundle-aware `FeaturePartition` validation, deterministic
   access-assignment checksums, and detached party-local payload resolution;

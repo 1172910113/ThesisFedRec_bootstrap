@@ -68,6 +68,10 @@ def save_base_cache(
         raise ValueError(
             "base-cache schema 1.0 cannot persist non-empty FeatureView payloads"
         )
+    if bundle.graph_views:
+        raise ValueError(
+            "base-cache schema 1.0 cannot persist non-empty GraphView payloads"
+        )
 
     missing = [
         key for key in _REQUIRED_METADATA_KEYS if key not in bundle.metadata

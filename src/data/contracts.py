@@ -204,6 +204,103 @@ class FeatureView:
             raise TypeError("FeatureView metadata must be a dictionary")
 
 
+@dataclass(slots=True, kw_only=True)
+class GraphView:
+    """Canonical graph structure; arrays and metadata are retained by reference."""
+
+    name: str
+    node_raw_ids: tuple[RawId, ...]
+    node_type_ids: np.ndarray
+    node_type_names: tuple[str, ...]
+    edge_index: np.ndarray
+    relation_ids: np.ndarray
+    relation_names: tuple[str, ...]
+    metadata: Metadata
+    user_to_node: np.ndarray | None = None
+    item_to_node: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Check current structure, not semantic joins, ownership, or leakage."""
+        if not isinstance(self.name, str):
+            raise TypeError("GraphView name must be a string")
+        if not self.name.strip():
+            raise ValueError("GraphView name must not be empty")
+        if not isinstance(self.node_raw_ids, tuple) or any(
+            type(raw_id) not in (str, int) for raw_id in self.node_raw_ids
+        ):
+            raise TypeError(
+                "GraphView node_raw_ids must be a tuple of exact built-in str or int"
+            )
+
+        for field_name in ("node_type_names", "relation_names"):
+            names = getattr(self, field_name)
+            if not isinstance(names, tuple) or any(
+                not isinstance(name, str) for name in names
+            ):
+                raise TypeError(f"GraphView {field_name} must be a tuple of strings")
+            if any(not name.strip() for name in names):
+                raise ValueError(f"GraphView {field_name} must contain nonblank names")
+            if len(set(names)) != len(names):
+                raise ValueError(f"GraphView {field_name} must be unique")
+
+        num_nodes = len(self.node_raw_ids)
+        _validate_int_array("GraphView node_type_ids", self.node_type_ids)
+        if len(self.node_type_ids) != num_nodes:
+            raise ValueError("GraphView node_type_ids must have one entry per node")
+        if np.any(self.node_type_ids < 0) or np.any(
+            self.node_type_ids >= len(self.node_type_names)
+        ):
+            raise ValueError("GraphView node_type_ids contains an out-of-range ID")
+        node_identities = {
+            (node_type, type(raw_id), raw_id)
+            for node_type, raw_id in zip(self.node_type_ids, self.node_raw_ids)
+        }
+        if len(node_identities) != num_nodes:
+            raise ValueError(
+                "GraphView node identities must be unique within each node type"
+            )
+
+        if not isinstance(self.edge_index, np.ndarray):
+            raise TypeError("GraphView edge_index must be a NumPy array")
+        if self.edge_index.ndim != 2 or self.edge_index.shape[0] != 2:
+            raise ValueError("GraphView edge_index must have shape (2, E)")
+        if self.edge_index.dtype != np.int64:
+            raise TypeError("GraphView edge_index must have dtype int64")
+        if np.any(self.edge_index < 0) or np.any(self.edge_index >= num_nodes):
+            raise ValueError("GraphView edge_index contains an out-of-range node ID")
+
+        num_edges = self.edge_index.shape[1]
+        _validate_int_array("GraphView relation_ids", self.relation_ids)
+        if len(self.relation_ids) != num_edges:
+            raise ValueError("GraphView relation_ids must have one entry per edge")
+        if np.any(self.relation_ids < 0) or np.any(
+            self.relation_ids >= len(self.relation_names)
+        ):
+            raise ValueError("GraphView relation_ids contains an out-of-range ID")
+        edge_triples = set(
+            zip(self.edge_index[0], self.relation_ids, self.edge_index[1])
+        )
+        if len(edge_triples) != num_edges:
+            raise ValueError(
+                "GraphView must not contain duplicate (source, relation, destination) "
+                "triples"
+            )
+
+        for field_name in ("user_to_node", "item_to_node"):
+            mapping = getattr(self, field_name)
+            if mapping is not None:
+                _validate_int_array(f"GraphView {field_name}", mapping)
+                if np.any(mapping < -1) or np.any(mapping >= num_nodes):
+                    raise ValueError(
+                        f"GraphView {field_name} entries must be -1 or valid node IDs"
+                    )
+        if not isinstance(self.metadata, dict):
+            raise TypeError("GraphView metadata must be a dictionary")
+
+
 @dataclass(frozen=True, slots=True, kw_only=True, init=False)
 class FeatureAccess:
     """Frozen selection exposing independent NumPy views of immutable ID bytes."""
@@ -369,7 +466,7 @@ class DatasetBundle:
     partition_kind: PartitionKind = "none"
     parties: tuple[PartyData, ...] = ()
     feature_views: dict[str, FeatureView] = field(default_factory=dict)
-    graph_views: dict[str, object] = field(default_factory=dict)
+    graph_views: dict[str, GraphView] = field(default_factory=dict)
     continual_views: dict[str, object] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -425,5 +522,25 @@ class DatasetBundle:
                     f"FeatureView {view.name!r} references an out-of-range "
                     f"{view.entity_kind} ID"
                 )
+        if not isinstance(self.graph_views, dict):
+            raise TypeError("graph_views must be a dictionary")
+        for view_name, view in self.graph_views.items():
+            if not isinstance(view_name, str):
+                raise TypeError("graph_views keys must be strings")
+            if not isinstance(view, GraphView):
+                raise TypeError("graph_views values must be GraphView objects")
+            view.validate()
+            if view_name != view.name:
+                raise ValueError("graph_views keys must match their GraphView names")
+            for field_name, namespace_size in (
+                ("user_to_node", len(self.user_id_map)),
+                ("item_to_node", len(self.item_id_map)),
+            ):
+                mapping = getattr(view, field_name)
+                if mapping is not None and len(mapping) != namespace_size:
+                    raise ValueError(
+                        f"GraphView {view.name!r} {field_name} must cover the "
+                        "complete processed namespace"
+                    )
         if not isinstance(self.metadata, dict):
             raise TypeError("metadata must be a dictionary")
