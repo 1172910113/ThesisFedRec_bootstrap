@@ -1,5 +1,23 @@
 # Roadmap
 
+## Current accepted state and next bounded data unit
+
+The accepted Phase 4C1 GraphView baseline is `a059592`; its integration and
+publication are closed. The older phase outline below is historical planning,
+not a claim that all listed methods/backbones are implemented. The runnable
+baseline remains FedGMF/HFL, not a new NeuMF implementation.
+
+The current data unit adds only Amazon Reviews 2014 Books official 5-core
+interactions, temporal splits, source identities, and metadata coverage audit.
+See `AMAZON_BOOKS_2014.md`. Industrial and Scientific is deferred; Yelp awaits
+its own suitability audit. No processed Books cache is introduced.
+
+Subsequent model priorities require separate specifications: preserve FedGMF,
+then federated NeuMF, MF/BPR as an explicit model/objective combination, and
+later assessment of feature-aware DeepFM and federated LightGCN. Graph access,
+party projections, reusable data persistence, and runner integration are
+separate tasks, not prerequisites bundled into this data commit.
+
 ## Phase 0 — Legacy analysis
 
 Goal:
@@ -45,7 +63,7 @@ No research method is required yet.
 Implement:
 
 - MovieLens-1M loader;
-- Amazon Industrial loader;
+- Amazon Books 2014 official 5-core loader (the Industrial candidate is deferred);
 - deterministic ID mapping;
 - leave-one-out split;
 - centralized negative-sampling utility;

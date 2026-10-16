@@ -32,13 +32,25 @@ Optional additional K values may be reported, but HR@10 and NDCG@10 remain the c
 Primary:
 
 - MovieLens-1M
-- Amazon Industrial and Scientific
+- Amazon Reviews 2014 Books, official 5-core
+
+The Books data unit supplies canonical interactions and a metadata audit only;
+it does not expand the frozen Phase 3 runner/configuration to another dataset.
+Industrial and Scientific is deferred. Yelp requires a separate suitability
+audit. Books source identity and exact processing rules are documented in
+`AMAZON_BOOKS_2014.md`; this is not the LightGCN/KGAT Amazon-book benchmark.
 
 Optional development/smoke-test dataset:
 
 - MovieLens-100K
 
 All methods should run on both primary datasets whenever their required information is available.
+
+Use the project data root from `THESISFEDREC_DATA_ROOT` for new real-data work
+(`/data_nfs/yuanhaochen/ThesisFedRec` on this server), with root-relative dataset
+paths. New experiment outputs/checkpoints belong under its `results/` directory
+when separately authorized. Historical artifacts and frozen Phase 3 configs
+are unchanged; this storage requirement does not retroactively move them.
 
 ---
 

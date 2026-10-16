@@ -102,10 +102,17 @@ Location:
 src/models/
 ```
 
-Initial shared backbones:
+The accepted baseline is ID-only FedGMF. The approved expansion direction is:
 
-- FedNCF
-- PFedRec, if migration remains straightforward
+- preserve FedGMF;
+- prioritize a separately specified federated NeuMF;
+- add MF with BPR as an explicit model/objective combination;
+- later assess feature-aware DeepFM and federated LightGCN.
+
+These are planning priorities, not authorization to implement models in a
+data-only unit. The Books 2014 unit does not modify the runner, configuration
+validator, model interfaces, or training path. Graph access/partition design
+also remains separately scoped.
 
 Method-specific models stay under their own method directory if they are not reusable.
 

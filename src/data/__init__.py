@@ -1,5 +1,10 @@
 """Shared processed-data contracts and deterministic preprocessing utilities."""
 
+from src.data.amazon_books import (
+    audit_amazon_books_metadata,
+    iter_amazon_books_reviews,
+    preprocess_amazon_books,
+)
 from src.data.contracts import (
     DatasetBundle,
     FeatureAccess,
@@ -39,13 +44,16 @@ __all__ = [
     "InteractionSplits",
     "InteractionTable",
     "PartyData",
+    "audit_amazon_books_metadata",
     "build_complete_feature_scenario",
     "build_hfl_partition",
     "build_ml1m_item_genre_view",
     "build_single_view_absence_scenario",
     "feature_partition_checksum",
+    "iter_amazon_books_reviews",
     "leave_one_out_split",
     "load_ml1m_ratings",
+    "preprocess_amazon_books",
     "preprocess_ml1m",
     "preprocess_ml1m_from_root",
     "resolve_data_path",

@@ -89,6 +89,30 @@ Read these before modifying architecture:
 - `pytest` is used for tests.
 - All random seeds should be set through one shared utility.
 
+## Project storage and current dataset boundary
+
+- Activate the existing `thesis-fedrec` Conda environment before Git or Python
+  operations. It currently uses Python 3.11; the Python 3.10 convention above
+  is not evidence of tested 3.10 compatibility. Do not rebuild it implicitly.
+- For server project commands, set `THESISFEDREC_DATA_ROOT` per process to
+  `/data_nfs/yuanhaochen/ThesisFedRec`, without editing global shell settings.
+  New real sources, processed artifacts, derived caches/features/graphs,
+  manifests, audits, results/checkpoints, and temporary data belong beneath
+  that root. Create only needed directories; keep YAML paths root-relative.
+- Do not place real datasets or generated payloads in Git, or use symlinks to
+  bypass this storage boundary. Preserve other projects' data and historical
+  results. Repository-local `data/raw` remains a small-fixture fallback.
+- Future pretrained weights, tokenizers, processors, and download caches
+  belong beneath `/data_nfs/yuanhaochen/llm`. Record exact upstream revisions
+  and local snapshots, load them locally, and never silently substitute or
+  download another version. Books data and ID-only backbones need no such model.
+- The selected Amazon source is **Books, Amazon Reviews 2014, official 5-core**,
+  not Kindle, Amazon 2018/2023, or a processed LightGCN/KGAT benchmark.
+  Industrial and Scientific is deferred; Yelp needs a separate suitability audit.
+- Preserve FedGMF and the frozen Phase 3 configuration/runner. NeuMF, MF/BPR,
+  feature-aware models, graph access, persistence, and training integration
+  require separately scoped authorization; a data unit does not authorize them.
+
 ## Definition of done for implementation tasks
 
 A task is complete only when:

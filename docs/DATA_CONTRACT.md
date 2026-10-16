@@ -147,6 +147,16 @@ Additional rules:
 
 Graph nodes use a graph-local namespace. A `GraphView` provides explicit user/item-to-node mappings where applicable.
 
+The separately authorized Books 2014 5-core unit in `src/data/amazon_books.py`
+preserves exact string reviewer IDs and ASINs. It reuses the base contracts and
+temporal splitter, but not ML1M's integer-casting raw-ID mapper. Its final IDs
+follow first appearance among retained source records, after latest-timestamp/
+latest-source-line deduplication and the minimum-three-interactions user check.
+There is no extra k-core pruning. Metadata auditing cannot extend that item
+namespace. Features/graphs remain empty, and no durable Books processed-cache
+format or schema change is introduced. See `AMAZON_BOOKS_2014.md` for source,
+validation, storage, and degree/coverage reporting details.
+
 ---
 
 ## 5. Train, validation, and test representation

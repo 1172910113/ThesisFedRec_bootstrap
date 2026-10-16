@@ -1,0 +1,26 @@
+# Standalone data capability only; not a Phase 3 experiment configuration.
+data:
+  root_env: THESISFEDREC_DATA_ROOT
+  fallback_root: data/raw
+
+dataset:
+  name: amazon_books_2014_5core
+  reviews_path: raw/amazon_books_2014/reviews_Books_5.json.gz
+  metadata_path: raw/amazon_books_2014/meta_Books.json.gz
+  source_page: https://cseweb.ucsd.edu/~jmcauley/datasets/amazon/links.html
+  reviews_url: https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/reviews_Books_5.json.gz
+  metadata_url: https://snap.stanford.edu/data/amazon/productGraph/categoryFiles/meta_Books.json.gz
+  reference_reviews: 8898041
+  reference_metadata_products: 2370585
+
+preprocessing:
+  seed: 2026
+  min_interactions_per_user: 3
+  duplicate_policy: keep_latest
+  implicit_feedback: all_observed
+  canonical_order: source_order
+  additional_k_core_pruning: false
+
+split:
+  strategy: leave_one_out_temporal
+  tie_breaker: interaction_id
