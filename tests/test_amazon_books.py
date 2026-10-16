@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import src.data.amazon_books as amazon_books
+import src.data.loaders as loaders
 from scripts.audit_amazon_books import build_audit_report, main
 from src.data import (
     audit_amazon_books_metadata,
@@ -214,13 +216,84 @@ def test_invalid_metadata_ids_fail(books_root: Path, record: dict) -> None:
         audit_amazon_books_metadata(bundle, data_root=books_root)
 
 
-def test_paths_use_environment_and_reject_escapes(books_root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_paths_use_environment_and_reject_escapes(
+    books_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+) -> None:
     monkeypatch.setenv("THESISFEDREC_DATA_ROOT", str(books_root))
-    assert len(preprocess_amazon_books().interactions) == 6
+    assert len(list(iter_amazon_books_reviews())) == 11
+    bundle = preprocess_amazon_books()
+    assert len(bundle.interactions) == 6
+    assert audit_amazon_books_metadata(bundle)["matched_items"] == 3
+    assert build_audit_report()["checks"]["input_archives_unchanged"]
+    assert main(["--audit-output", "audits/environment.json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert json.loads((books_root / "audits/environment.json").read_text()) == report
     with pytest.raises(ValueError, match="relative"):
         preprocess_amazon_books(books_root / REVIEWS_PATH)
     with pytest.raises(ValueError, match="within"):
         preprocess_amazon_books("../outside.gz")
+
+
+@pytest.mark.parametrize("empty_environment", [False, True])
+def test_books_defaults_use_repository_data_without_a_double_raw(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    empty_environment: bool,
+) -> None:
+    monkeypatch.delenv("THESISFEDREC_DATA_ROOT", raising=False)
+    if empty_environment:
+        monkeypatch.setenv("THESISFEDREC_DATA_ROOT", "")
+    repository = tmp_path / "repository"
+    root = repository / "data"
+    # Redirect only location anchors, never stub either resolver. Fixtures stay
+    # in pytest's isolated layout, not in the original checkout.
+    monkeypatch.setattr(amazon_books, "__file__", str(repository / "src/data/amazon_books.py"))
+    monkeypatch.setattr(loaders, "__file__", str(repository / "src/data/loaders.py"))
+    items = ("000", "001", "00A")
+    _write(root / REVIEWS_PATH, [_record(item=item, timestamp=i) for i, item in enumerate(items)])
+    _write(root / METADATA_PATH, [{"asin": item} for item in items], literal=True)
+
+    assert loaders.resolve_data_root() == root / "raw"  # Shared contract unchanged.
+    assert loaders.resolve_data_path("ml-1m/ratings.dat") == root / "raw/ml-1m/ratings.dat"
+    assert [review[1] for review in iter_amazon_books_reviews()] == list(items)
+    bundle = preprocess_amazon_books()
+    assert len(bundle.interactions) == 3
+    assert bundle.item_id_map == {"000": 0, "001": 1, "00A": 2}
+    assert audit_amazon_books_metadata(bundle)["matched_items"] == 3
+    assert build_audit_report()["checks"]["input_archives_unchanged"]
+    assert main(["--audit-output", "audits/fallback.json",
+                 "--source-manifest", "manifests/fallback.json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["checks"]["input_archives_unchanged"]
+    assert json.loads((root / "audits/fallback.json").read_text()) == report
+    assert json.loads((root / "manifests/fallback.json").read_text()) == report["sources"]
+    assert not (root / "raw/raw").exists()
+
+    with pytest.raises(ValueError, match="within"):
+        list(iter_amazon_books_reviews("../outside.gz"))
+    with pytest.raises(ValueError, match="relative"):
+        audit_amazon_books_metadata(bundle, root / METADATA_PATH)
+    with pytest.raises(ValueError, match="within"):
+        build_audit_report(metadata_path="../outside.gz")
+    with pytest.raises(ValueError, match="within"):
+        main(["--audit-output", "../audits/outside.json"])
+
+
+def test_explicit_books_root_overrides_environment(
+    books_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    ignored_root = books_root / "ignored_environment_root"
+    monkeypatch.setenv("THESISFEDREC_DATA_ROOT", str(ignored_root))
+    assert len(list(iter_amazon_books_reviews(data_root=books_root))) == 11
+    bundle = preprocess_amazon_books(data_root=books_root)
+    assert len(bundle.interactions) == 6
+    assert audit_amazon_books_metadata(bundle, data_root=books_root)["matched_items"] == 3
+    assert build_audit_report(data_root=books_root)["checks"]["input_archives_unchanged"]
+    assert main(["--data-root", str(books_root), "--audit-output", "audits/explicit.json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert json.loads((books_root / "audits/explicit.json").read_text()) == report
+    assert report["sources"]["reviews"]["relative_path"] == "raw/amazon_books_2014/reviews_Books_5.json.gz"
+    assert report["sources"]["metadata"]["relative_path"] == "raw/amazon_books_2014/meta_Books.json.gz"
+    assert not ignored_root.exists()
 
 
 @pytest.mark.parametrize("seed", [True, -1, 2**32, "2026", 1.0])
@@ -264,6 +337,7 @@ def test_audit_command_reports_mismatches_and_writes_only_new_reports(books_root
 
 def test_dataset_yaml_matches_standalone_defaults() -> None:
     config = load_yaml(Path(__file__).resolve().parents[1] / "configs/datasets/amazon_books_2014_5core.yaml")
+    assert config["data"]["fallback_root"] == "data"
     assert config["dataset"]["reviews_path"] == REVIEWS_PATH
     assert config["dataset"]["metadata_path"] == METADATA_PATH
     assert config["preprocessing"]["min_interactions_per_user"] == 3
@@ -279,4 +353,4 @@ def test_real_amazon_books_data_acceptance() -> None:
     assert report["acceptance_passed"], report["checks"]
     assert report["processing"]["counts"]["valid"] == report["processing"]["counts"]["users"]
     assert report["processing"]["counts"]["test"] == report["processing"]["counts"]["users"]
-    assert resolve_data_path(REVIEWS_PATH).is_file()
+    assert resolve_data_path(REVIEWS_PATH, data_root=amazon_books._resolve_books_data_root()).is_file()

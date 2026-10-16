@@ -5,6 +5,7 @@ import gzip
 import json
 import logging
 import math
+import os
 from array import array
 from collections import Counter
 from collections.abc import Iterator
@@ -14,7 +15,7 @@ from typing import Any
 import numpy as np
 
 from src.data.contracts import SCHEMA_VERSION, DatasetBundle, InteractionTable
-from src.data.loaders import resolve_data_path
+from src.data.loaders import DATA_ROOT_ENV, resolve_data_path, resolve_data_root
 from src.data.preprocess import (
     _apply_duplicate_policy,
     _filter_minimum_interactions,
@@ -29,6 +30,15 @@ REVIEWS_PATH = "raw/amazon_books_2014/reviews_Books_5.json.gz"
 METADATA_PATH = "raw/amazon_books_2014/meta_Books.json.gz"
 REFERENCE_REVIEW_COUNT = 8_898_041
 REFERENCE_METADATA_COUNT = 2_370_585
+
+
+def _resolve_books_data_root(data_root: str | Path | None = None) -> Path:
+    """Use a project root; only Books falls back to repository-local data/."""
+    if data_root is None:
+        data_root = os.environ.get(DATA_ROOT_ENV) or (
+            Path(__file__).resolve().parents[2] / "data"
+        )
+    return resolve_data_root(data_root)
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -90,6 +100,7 @@ def iter_amazon_books_reviews(
     data_root: str | Path | None = None,
 ) -> Iterator[tuple[str, str, float, int]]:
     """Yield (reviewerID, asin, overall, unixReviewTime) in source-line order."""
+    data_root = _resolve_books_data_root(data_root)
     path = resolve_data_path(reviews_relative_path, data_root=data_root)
     for line, record in _iter_records(path):
         user = _required_id(record, "reviewerID", line)
@@ -167,6 +178,7 @@ def preprocess_amazon_books(
     """
     if type(seed) is not int or not 0 <= seed < 2**32:
         raise ValueError("seed must be a Python integer in [0, 2**32)")
+    data_root = _resolve_books_data_root(data_root)
     path = resolve_data_path(reviews_relative_path, data_root=data_root)
     original_state = _file_state(path)
     source = _source_identity(path, reviews_relative_path, reviews=True)
@@ -271,6 +283,7 @@ def audit_amazon_books_metadata(
         for raw, processed in mapping.items()
     ) or sorted(mapping.values()) != list(range(len(mapping))):
         raise ValueError("item mapping must preserve string IDs and contiguous processed integers")
+    data_root = _resolve_books_data_root(data_root)
     path = resolve_data_path(metadata_relative_path, data_root=data_root)
     original_state = _file_state(path)
     source = _source_identity(path, metadata_relative_path, reviews=False)

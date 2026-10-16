@@ -74,9 +74,22 @@ audit_amazon_books_metadata(bundle, metadata_relative_path=METADATA_PATH, *, dat
 # plain coverage/source-identity dictionary; does not alter the bundle
 ```
 
-Paths are relative to the explicit root, otherwise `THESISFEDREC_DATA_ROOT`,
-otherwise repository `data/raw` for small fixtures. Absolute paths and root
-escapes fail through existing path resolution. The data-only YAML at
+Books paths are relative to the explicit project root, otherwise a nonempty
+`THESISFEDREC_DATA_ROOT`, otherwise `<repository>/data` for synthetic fixtures.
+The default relative source paths retain their `raw/` prefix, resolving locally
+to `<repository>/data/raw/amazon_books_2014/reviews_Books_5.json.gz` and
+`<repository>/data/raw/amazon_books_2014/meta_Books.json.gz`, without duplicating
+`raw`. An empty environment value also selects this fallback. Explicit and
+environment roots are used as supplied, so the established NFS locations stay
+unchanged. Real data must remain under the approved NFS root, not the checkout.
+
+Loading, preprocessing, metadata auditing, the standalone audit command's
+integrity checks, and report destinations all use this Books-specific root.
+For example, a fallback `audits/example.json` destination is under
+`<repository>/data/audits/`, not `data/raw/audits/`. Absolute source/report paths
+and root escapes still fail through the shared containment checks. The shared
+`resolve_data_root()` fallback remains `data/raw`; ML1M behavior is unchanged.
+The data-only YAML at
 `configs/datasets/amazon_books_2014_5core.yaml` documents these defaults; it is
 not an executable Phase 3 experiment config and is not consumed by the frozen
 Phase 3 validator/runner. The standalone audit CLI takes explicit path options.
@@ -185,6 +198,11 @@ Python 3.11, despite the historical Python 3.10 convention; 3.10 compatibility
 is not claimed without testing. No dependencies or environment changes are needed.
 
 ## Executed validation — 2026-10-16
+
+The results below belong to reviewed revision
+`99542712e60819bdb00f1a54158a3dfb2a653e3a`. Real-data acceptance is retained as
+evidence from that revision, not rerun for the subsequent Books-only fallback
+correction. Its source archives and external evidence files remain unchanged.
 
 Both official archives were acquired into task-specific partial files, fully
 parsed through gzip EOF, checked against the reference counts, and finalized

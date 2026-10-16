@@ -1,7 +1,7 @@
 # Standalone data capability only; not a Phase 3 experiment configuration.
 data:
   root_env: THESISFEDREC_DATA_ROOT
-  fallback_root: data/raw
+  fallback_root: data
 
 dataset:
   name: amazon_books_2014_5core

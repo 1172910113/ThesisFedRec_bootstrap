@@ -20,10 +20,11 @@ from src.data.amazon_books import (
     REFERENCE_METADATA_COUNT,
     REFERENCE_REVIEW_COUNT,
     REVIEWS_PATH,
+    _resolve_books_data_root,
     audit_amazon_books_metadata,
     preprocess_amazon_books,
 )
-from src.data.loaders import resolve_data_path, resolve_data_root
+from src.data.loaders import resolve_data_path
 from src.data.preprocess import _sha256_file
 
 
@@ -44,6 +45,7 @@ def build_audit_report(
     seed: int = 2026,
 ) -> dict[str, Any]:
     """Validate locally available sources; never download or persist a dataset."""
+    data_root = _resolve_books_data_root(data_root)
     logging.info("Processing Books reviews from %s", reviews_path)
     bundle = preprocess_amazon_books(reviews_path, data_root=data_root, seed=seed)
     logging.info("Auditing Books metadata from %s", metadata_path)
@@ -104,11 +106,12 @@ def build_audit_report(
     }
 
 
-def _report_path(relative: str | None, directory: str, data_root: str | None) -> Path | None:
+def _report_path(relative: str | None, directory: str, data_root: str | Path | None) -> Path | None:
     if relative is None:
         return None
+    data_root = _resolve_books_data_root(data_root)
     path = resolve_data_path(relative, data_root=data_root)
-    parts = path.relative_to(resolve_data_root(data_root)).parts
+    parts = path.relative_to(data_root).parts
     if len(parts) < 2 or parts[0] != directory or path.suffix != ".json":
         raise ValueError(f"report must be a .json path under {directory}/")
     if path.exists():
@@ -125,11 +128,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--audit-output", help="new data-root-relative audits/*.json")
     parser.add_argument("--source-manifest", help="new data-root-relative manifests/*.json")
     arguments = parser.parse_args(argv)
-    audit_path = _report_path(arguments.audit_output, "audits", arguments.data_root)
-    manifest_path = _report_path(arguments.source_manifest, "manifests", arguments.data_root)
+    data_root = _resolve_books_data_root(arguments.data_root)
+    audit_path = _report_path(arguments.audit_output, "audits", data_root)
+    manifest_path = _report_path(arguments.source_manifest, "manifests", data_root)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
     report = build_audit_report(arguments.reviews_path, arguments.metadata_path,
-                               data_root=arguments.data_root, seed=arguments.seed)
+                               data_root=data_root, seed=arguments.seed)
     for path, payload in ((audit_path, report), (manifest_path, report["sources"])):
         if path is not None:
             path.parent.mkdir(parents=True, exist_ok=True)
