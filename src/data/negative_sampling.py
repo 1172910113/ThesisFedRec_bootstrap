@@ -52,38 +52,45 @@ def sample_negative_items(
         for user_id, item_id in zip(users.tolist(), items.tolist(), strict=True):
             known_by_user[user_id].add(item_id)
 
-    all_items = np.arange(len(bundle.item_id_map), dtype=np.int64)
+    num_items = len(bundle.item_id_map)
     rng = np.random.default_rng(seed)
     samples: dict[int, tuple[int, ...]] = {}
-    eligible_by_user: dict[int, np.ndarray] = {}
+    excluded_by_user: dict[int, np.ndarray] = {}
     for interaction_id in np.sort(positive_ids):
         user_id = int(bundle.interactions.user_ids[interaction_id])
-        if user_id not in eligible_by_user:
-            known_items = np.fromiter(
-                known_by_user[user_id],
-                dtype=np.int64,
-            )
-            eligible_by_user[user_id] = np.setdiff1d(
-                all_items,
-                known_items,
-                assume_unique=True,
+        if user_id not in excluded_by_user:
+            excluded_by_user[user_id] = np.sort(
+                np.fromiter(known_by_user[user_id], dtype=np.int64)
             )
         positive_item_id = int(bundle.interactions.item_ids[interaction_id])
-        eligible = eligible_by_user[user_id]
-        eligible = eligible[eligible != positive_item_id]
-        if not replace and negatives_per_positive > eligible.size:
+        excluded = excluded_by_user[user_id]
+        position = np.searchsorted(excluded, positive_item_id)
+        if position == excluded.size or excluded[position] != positive_item_id:
+            # np.insert returns a target-specific copy, preserving the user cache.
+            excluded = np.insert(excluded, position, positive_item_id)
+        eligible_count = num_items - excluded.size
+        if not replace and negatives_per_positive > eligible_count:
             raise ValueError(
-                f"user {user_id} has only {eligible.size} eligible negative items"
+                f"user {user_id} has only {eligible_count} eligible negative items"
             )
-        if eligible.size == 0 and negatives_per_positive:
+        if eligible_count == 0 and negatives_per_positive:
             raise ValueError(f"user {user_id} has no eligible negative items")
 
-        selected = rng.choice(
-            eligible,
+        ranks = rng.choice(
+            eligible_count,
             size=negatives_per_positive,
             replace=replace,
         )
+        selected = _eligible_items_from_ranks(ranks, excluded)
         samples[int(interaction_id)] = tuple(
             int(item_id) for item_id in np.sort(selected)
         )
     return samples
+
+
+def _eligible_items_from_ranks(
+    ranks: np.ndarray, excluded_item_ids: np.ndarray
+) -> np.ndarray:
+    """Map ranks in the ascending complement of sorted unique exclusions."""
+    gaps = excluded_item_ids - np.arange(excluded_item_ids.size, dtype=np.int64)
+    return ranks + np.searchsorted(gaps, ranks, side="right")

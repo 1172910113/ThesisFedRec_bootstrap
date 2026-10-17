@@ -359,6 +359,24 @@ Rules:
 - strategy, seed, excluded splits, replacement policy, sample count, and artifact checksum are recorded;
 - future privacy-preserving VFL sampling is protocol-specific and must not assume all parties possess HFL-style user histories.
 
+Implementation note: bounded eligible-pool sampling leaves this scientific
+contract and the public API unchanged. It samples integer ranks and maps them
+into the ascending complement of sorted known positives plus the mandatory
+current target; no full eligible pool is retained. Public-call outputs,
+ordering, errors, and RNG calls/states were compared with the materialized
+sampler at `705e06921e16c85be39044786d57cf9d05548f0f` under Python 3.11.16 and
+NumPy 1.26.4, including frozen baseline outputs. This is not a cross-version
+RNG-equivalence guarantee or a runtime version restriction.
+
+Known-positive sets are still rebuilt for each call; this unit adds no reusable
+index. Exclusion arrays require storage proportional to known positives, and
+returned samples require storage proportional to their count. Dense
+no-replacement requests may still allocate population-sized temporary
+workspace inside NumPy. Removing full eligible-pool retention does not imply
+constant-memory sampling or make full Books training ready: repeated indexing,
+upload retention, evaluation setup, and dense training costs remain separate
+work.
+
 ---
 
 ## 10. FeatureView interface
