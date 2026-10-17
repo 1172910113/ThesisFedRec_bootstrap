@@ -203,6 +203,30 @@ The runner must not assume:
 - all methods exchange model parameters;
 - all methods use FedAvg.
 
+### Current FedGMF train-only entry point (FIT-1)
+
+`src.federation.runner.fit_fedgmf_hfl(bundle, parties, config)` is a public,
+in-memory entry point for a fresh FedGMF/HFL fit. It initializes shared and
+party-local states, constructs fixed validation candidates, executes every
+configured round, and monitors validation after each round. It returns
+`FedGMFHFLFitResult` with final shared/local states, validation candidates,
+and round summaries only. Validation does not select an earlier model or
+stop training; the returned state is the final configured round's state.
+
+Fit and `run_fedgmf_hfl_experiment()` share initialization and one private
+training/validation loop. The full-run wrapper still builds validation then
+test candidates before training, preserving candidate-failure precedence,
+and evaluates test exactly once after the final round. Its result contract
+and `execute_phase3_experiment()` artifacts remain unchanged.
+
+Fit never constructs or scores test candidates and writes no artifacts. This
+does not prohibit all held-out-ID reads: unchanged known-positive exclusions
+include train/validation/test, and structural ownership checks still cover
+both held-out splits. Existing validated configuration semantics, party/user
+separation, initialization, sampling, local optimization, and aggregation are
+unchanged. No public flag, stage/resume framework, dataset-resolution path,
+Books runner, graph training, or research-method integration is added.
+
 ---
 
 ## 4. Continual learning

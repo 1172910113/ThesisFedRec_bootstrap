@@ -173,3 +173,49 @@ methods/doi4/
 If two methods genuinely require the same component, first decide whether the component is research-specific or infrastructure-level.
 
 Only infrastructure-level components should be moved into shared directories.
+
+## 8. Public train-only FedGMF warmup (FIT-1)
+
+The implemented entry point is imported from `src.federation.runner`:
+
+```python
+fit_fedgmf_hfl(
+    bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+    config: Mapping[str, Any],
+) -> FedGMFHFLFitResult
+```
+
+The frozen, slotted, keyword-only result dataclass contains exactly:
+
+```python
+final_shared_state: dict[str, torch.Tensor]
+final_local_states: dict[int, FedGMFLocalState]
+validation_candidates: EvaluationCandidateSet
+round_summaries: tuple[FedGMFHFLRoundSummary, ...]
+```
+
+It has no test candidates, test metrics, or placeholder test fields. As with
+the existing full in-memory runner, callers supply an already validated
+configuration and explicit parties; this entry point does not load data,
+build partitions, expand configuration schemas, or write result artifacts.
+Each call starts fresh, seeds and initializes the model using the existing
+scheme, runs all configured rounds, and returns final-round state. Fixed
+validation candidates are reused for monitoring each round, never early
+stopping or best-round selection. Errors propagate without returning a
+partially completed fit result. Inputs are not modified; returned tensors
+and dictionaries remain mutable, not deeply frozen or a resume checkpoint.
+
+Test-candidate construction/scoring/evaluation is absent from fit. The
+unchanged all-split known-positive sampling exclusion and structural checks
+for validation/test user ownership still read held-out IDs. Train-only here
+means no test evaluation, not isolation from every held-out identifier.
+Party IDs remain distinct from user IDs, including grouped/arbitrary-ID
+parties supported by the existing runner.
+
+`run_fedgmf_hfl_experiment()` remains the full-run wrapper: it constructs
+validation and test candidates before its shared training loop and evaluates
+test once at final state. `execute_phase3_experiment()` retains its existing
+artifacts. FIT-1 only exposes reusable warmup state; it does not implement
+later research stages, message collection, graph training, Books execution,
+or establish M2 readiness, recommendation quality, or full Books scalability.

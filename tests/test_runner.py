@@ -107,14 +107,21 @@ def test_two_round_grouped_experiment_wires_complete_lifecycle(
         tuple[dict[str, torch.Tensor], FedGMFLocalState],
     ] = {}
     active_evaluation: list[int | None] = [None]
+    lifecycle: list[str] = []
     real_build = runner_module.build_evaluation_candidates
     real_evaluate = runner_module.evaluate_candidates
     real_score = runner_module.score_fedgmf
+    real_round = runner_module.run_synchronous_hfl_round
 
     def tracked_build(*args: Any, **kwargs: Any) -> EvaluationCandidateSet:
         candidates = real_build(*args, **kwargs)
         built_candidates.append(candidates)
+        lifecycle.append(f"build:{candidates.split}")
         return candidates
+
+    def tracked_round(*args: Any, **kwargs: Any) -> Any:
+        lifecycle.append(f"round:{kwargs['round_index']}")
+        return real_round(*args, **kwargs)
 
     def tracked_evaluate(
         candidate_set: EvaluationCandidateSet,
@@ -123,6 +130,7 @@ def test_two_round_grouped_experiment_wires_complete_lifecycle(
         k_values: list[int],
     ) -> dict[str, float | int]:
         evaluation_index = len(evaluation_calls)
+        lifecycle.append(f"evaluate:{candidate_set.split}")
         evaluation_calls.append(candidate_set)
         active_evaluation[0] = evaluation_index
         try:
@@ -169,6 +177,7 @@ def test_two_round_grouped_experiment_wires_complete_lifecycle(
     )
     monkeypatch.setattr(runner_module, "evaluate_candidates", tracked_evaluate)
     monkeypatch.setattr(runner_module, "score_fedgmf", tracked_score)
+    monkeypatch.setattr(runner_module, "run_synchronous_hfl_round", tracked_round)
 
     result = run_fedgmf_hfl_experiment(
         processed_bundle,
@@ -179,6 +188,10 @@ def test_two_round_grouped_experiment_wires_complete_lifecycle(
     assert [candidate_set.split for candidate_set in built_candidates] == [
         "valid",
         "test",
+    ]
+    assert lifecycle == [
+        "build:valid", "build:test", "round:0", "evaluate:valid",
+        "round:1", "evaluate:valid", "evaluate:test",
     ]
     assert evaluation_calls == [
         built_candidates[0],
@@ -342,3 +355,29 @@ def test_validation_failure_propagates(
             _grouped_parties(processed_bundle),
             _config(rounds=1),
         )
+
+
+def test_test_candidate_failure_precedes_rounds_and_local_updates(
+    processed_bundle: DatasetBundle,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_build = runner_module.build_evaluation_candidates
+    built_splits = []
+
+    def fail_test_candidates(*args: Any, **kwargs: Any) -> EvaluationCandidateSet:
+        built_splits.append(kwargs["split"])
+        if kwargs["split"] == "test":
+            raise ValueError("test candidate construction failed")
+        return real_build(*args, **kwargs)
+
+    def forbid_training(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("test-candidate failure must precede any training")
+
+    monkeypatch.setattr(runner_module, "build_evaluation_candidates", fail_test_candidates)
+    monkeypatch.setattr(runner_module, "run_synchronous_hfl_round", forbid_training)
+    monkeypatch.setattr(runner_module, "train_local_fedgmf", forbid_training)
+    with pytest.raises(ValueError, match="test candidate construction failed"):
+        run_fedgmf_hfl_experiment(
+            processed_bundle, _grouped_parties(processed_bundle), _config()
+        )
+    assert built_splits == ["valid", "test"]

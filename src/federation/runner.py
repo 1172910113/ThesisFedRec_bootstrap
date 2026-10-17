@@ -56,6 +56,16 @@ class FedGMFHFLRoundSummary:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class FedGMFHFLFitResult:
+    """Final training state and validation monitoring, without test evaluation."""
+
+    final_shared_state: dict[str, torch.Tensor]
+    final_local_states: dict[int, FedGMFLocalState]
+    validation_candidates: EvaluationCandidateSet
+    round_summaries: tuple[FedGMFHFLRoundSummary, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class FedGMFHFLRunResult:
     """Final state and fixed evaluation inputs from one in-memory run."""
 
@@ -186,22 +196,112 @@ def execute_phase3_experiment(
         file_handler.close()
 
 
+def fit_fedgmf_hfl(
+    bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+    config: Mapping[str, Any],
+) -> FedGMFHFLFitResult:
+    """Train from initialization with validation, never building test candidates.
+
+    Config must already be validated, as for the full in-memory experiment.
+    Known-positive exclusion and structural ownership checks still inspect
+    held-out IDs; this is a test-evaluation boundary, not a data-access boundary.
+    """
+    ordered_parties, user_to_party, shared_state, local_states, candidate_args = (
+        _prepare_fedgmf_hfl(bundle, parties, config)
+    )
+    validation_candidates = build_evaluation_candidates(
+        bundle,
+        bundle.splits.valid_interaction_ids,
+        split="valid",
+        **candidate_args,
+    )
+    return _fit_fedgmf_rounds(
+        bundle,
+        ordered_parties,
+        config,
+        shared_state=shared_state,
+        local_states=local_states,
+        user_to_party=user_to_party,
+        validation_candidates=validation_candidates,
+    )
+
+
 def run_fedgmf_hfl_experiment(
     bundle: DatasetBundle,
     parties: Sequence[PartyData],
     config: Mapping[str, Any],
 ) -> FedGMFHFLRunResult:
     """Run the validated Phase 3 FedGMF/HFL configuration in memory."""
+    ordered_parties, user_to_party, shared_state, local_states, candidate_args = (
+        _prepare_fedgmf_hfl(bundle, parties, config)
+    )
+    validation_candidates = build_evaluation_candidates(
+        bundle,
+        bundle.splits.valid_interaction_ids,
+        split="valid",
+        **candidate_args,
+    )
+    # Keep legacy candidate ordering and failure precedence: both sets must
+    # be constructed successfully before the first training round starts.
+    test_candidates = build_evaluation_candidates(
+        bundle,
+        bundle.splits.test_interaction_ids,
+        split="test",
+        **candidate_args,
+    )
+    fit_result = _fit_fedgmf_rounds(
+        bundle,
+        ordered_parties,
+        config,
+        shared_state=shared_state,
+        local_states=local_states,
+        user_to_party=user_to_party,
+        validation_candidates=validation_candidates,
+    )
+    final_test_metrics = evaluate_candidates(
+        test_candidates,
+        _fedgmf_score_function(
+            fit_result.final_shared_state,
+            fit_result.final_local_states,
+            user_to_party,
+            device=config["runtime"]["device"],
+        ),
+        k_values=config["evaluation"]["k"],
+    )
+    return FedGMFHFLRunResult(
+        final_shared_state=fit_result.final_shared_state,
+        final_local_states=fit_result.final_local_states,
+        validation_candidates=fit_result.validation_candidates,
+        test_candidates=test_candidates,
+        round_summaries=fit_result.round_summaries,
+        final_test_metrics=final_test_metrics,
+    )
+
+
+def _prepare_fedgmf_hfl(
+    bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+    config: Mapping[str, Any],
+) -> tuple[
+    tuple[PartyData, ...],
+    dict[int, int],
+    dict[str, torch.Tensor],
+    dict[int, FedGMFLocalState],
+    dict[str, Any],
+]:
+    """Check ownership and initialize states in the legacy setup order."""
     ordered_parties, user_to_party = _hfl_user_ownership(bundle, parties)
-    federation = config["federation"]
+    # Resolve all legacy section keys before seeding or model initialization.
+    config["federation"]
     model = config["model"]
-    optimization = config["optimization"]
+    config["optimization"]
     evaluation = config["evaluation"]
     runtime = config["runtime"]
 
     run_seed = runtime["seed"]
     embedding_dim = model["embedding_dim"]
-    device = runtime["device"]
+    runtime["device"]
     set_random_seed(run_seed)
 
     shared_state = initialize_fedgmf_shared_state(
@@ -225,19 +325,29 @@ def run_fedgmf_hfl_experiment(
         "base_seed": run_seed,
         "excluded_splits": tuple(evaluation["excluded_splits"]),
     }
-    validation_candidates = build_evaluation_candidates(
-        bundle,
-        bundle.splits.valid_interaction_ids,
-        split="valid",
-        **candidate_arguments,
-    )
-    test_candidates = build_evaluation_candidates(
-        bundle,
-        bundle.splits.test_interaction_ids,
-        split="test",
-        **candidate_arguments,
+    return (
+        ordered_parties, user_to_party, shared_state, local_states,
+        candidate_arguments,
     )
 
+
+def _fit_fedgmf_rounds(
+    bundle: DatasetBundle,
+    ordered_parties: Sequence[PartyData],
+    config: Mapping[str, Any],
+    *,
+    shared_state: dict[str, torch.Tensor],
+    local_states: dict[int, FedGMFLocalState],
+    user_to_party: Mapping[int, int],
+    validation_candidates: EvaluationCandidateSet,
+) -> FedGMFHFLFitResult:
+    """The single training/validation loop shared by fit and full execution."""
+    federation = config["federation"]
+    optimization = config["optimization"]
+    evaluation = config["evaluation"]
+    runtime = config["runtime"]
+    run_seed = runtime["seed"]
+    device = runtime["device"]
     round_summaries: list[FedGMFHFLRoundSummary] = []
     for round_index in range(federation["rounds"]):
 
@@ -299,23 +409,11 @@ def run_fedgmf_hfl_experiment(
             )
         )
 
-    final_test_metrics = evaluate_candidates(
-        test_candidates,
-        _fedgmf_score_function(
-            shared_state,
-            local_states,
-            user_to_party,
-            device=device,
-        ),
-        k_values=evaluation["k"],
-    )
-    return FedGMFHFLRunResult(
+    return FedGMFHFLFitResult(
         final_shared_state=shared_state,
         final_local_states=local_states,
         validation_candidates=validation_candidates,
-        test_candidates=test_candidates,
         round_summaries=tuple(round_summaries),
-        final_test_metrics=final_test_metrics,
     )
 
 
