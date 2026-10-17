@@ -65,7 +65,8 @@ The relevant existing data seams are deliberately incomplete:
   separately constructed scenario object;
 - `PartyData.feature_view_names` and `graph_view_names` remain coarse visible-
   view summaries; Phase 4B2 adds separate feature row/field access, while
-  detailed graph node/edge visibility remains future work;
+  G1a adds bound graph node/edge access descriptors and strict validation,
+  while graph payload delivery remains future work;
 - the base cache serializes only interactions, splits, and mappings under
   schema `1.0`;
 - the Phase 3 runner is explicitly FedGMF/HFL and initializes one run from
@@ -443,50 +444,87 @@ safety. Metadata is a dictionary, not a verified provenance declaration.
 Future builders must record and enforce construction/source-split policies;
 metadata alone cannot prove that held-out interactions did not enter a graph.
 
-Weights, node features, graph access/partitions, builders/resolvers, scenario
-generators, persistence, models, and training integration are deferred. C1
+Weights, node features, builders/resolvers, scenario generators, persistence,
+models, and training integration are deferred. Graph access descriptors are
+implemented separately by G1a below; they do not change GraphView mutability. C1
 needs neither unfinished feature row/field recipes nor feature persistence.
 
 ### 5.2 Party-local incomplete graphs
 
-This subsection describes **future interfaces, not Phase 4C1 APIs**.
+G1a implements **descriptors and validation only**, separately from Phase 4C1.
 `PartyData.graph_view_names` is only a coarse summary, not `G_c subset of G`.
 The unchanged HFL builder defaults these names to all registered graphs in
 sorted order unless overridden. Those defaults neither enforce visibility
-nor authorize delivery of private graph payloads. The proposed derived
-contracts are:
+nor authorize delivery of private graph payloads. The implemented separate,
+frozen, slotted, keyword-only contracts are:
 
 ```python
 GraphAccess:
     view_name: str
     node_ids: IntArray | None
     edge_ids: IntArray | None
-    relation_type_ids: IntArray | None
 
 GraphPartition:
     name: str
-    party_access: dict[int, tuple[GraphAccess, ...]]
+    party_access: Mapping[int, tuple[GraphAccess, ...]]
+    source_graph_fingerprints: Mapping[str, str]
+    source_domain_fingerprint: str
     metadata: Metadata
 ```
 
-`None` means the complete corresponding canonical set. Explicit `node_ids`
-preserve visible isolated nodes. Every selected edge must have visible
-endpoints and an allowed relation type. The descriptor references canonical
-indices and does not duplicate node or edge data.
+`None` means the complete bound canonical set; an empty int64 array selects no
+entries. Absence of a descriptor hides the view, while empty selectors retain
+an explicitly visible view. Explicit selectors are sorted, unique, nonnegative
+canonical node-row/edge-column positions, not raw or processed recommendation
+IDs. Every selected edge must have both endpoints selected. No endpoint closure,
+edge inference, self-loops, or reverse arcs are generated. Explicit node access
+preserves isolated nodes. Relation visibility follows the selected edges;
+there is no relation-type selector or recipe in G1a.
 
-This representation controls independently:
+Selection contents are validated then copied once into immutable bytes. Each
+getter returns an independent read-only NumPy header; input mutation, writes,
+write-flag changes, and earlier header changes cannot alter permissions.
+Mappings are read-only defensive copies and descriptor collections are tuples.
+Metadata is shallow-copied, descriptive, and excluded from all hashes; nested
+metadata is not deeply immutable. Binding keys exactly equal referenced view
+names, with lowercase SHA-256 digests, and missing bindings are never inferred.
+
+`src/data/graph.py` exports `graph_view_fingerprint`,
+`graph_domain_fingerprint`, `graph_partition_checksum`, and
+`validate_graph_partition(partition, bundle, parties)`. Validation checks all
+supplied party IDs (exact built-in nonnegative ints, unique, not necessarily
+contiguous), every assignment, and every referenced current graph. Unknown
+parties/views, inconsistent coarse summaries, invalid graph registrations,
+out-of-range selectors, unauthorized endpoints, and stale bindings fail.
+No descriptor from another party is ignored. Known parties may have no views.
+Sample ownership and existing `DatasetBundle` embedded-party rules are unchanged.
+
+Current graph structure is revalidated, with complete processed-namespace
+mapping lengths. Optional/all-unmapped/many-to-one mappings and all legal base
+graph cases remain supported; no M2 injective-anchor rule is introduced.
+Graph identity includes ordered raw identities/types, arrays, complete ordered
+vocabularies, optional mappings, and graph name. Domain identity includes dataset
+name/schema and typed raw IDs in processed-ID order. Thus same-size ID
+reassignment and valid source edits invalidate old bindings. Partition identity
+includes these bindings and sorted party/view assignments, excluding scenario
+name and metadata; None and explicit-full remain distinct. Exact version-1 JSON
+payloads, canonical little-endian int64 array encoding, and independent pinned
+fixtures are specified in `DATA_CONTRACT.md` Sections 11.1-11.2.
+
+These descriptors represent:
 
 - edge visibility;
-- relation-type visibility;
+- relation visibility through explicit edge selection;
 - visible isolated nodes;
 - node and edge overlap between parties;
 - complete, local-only, and structurally incomplete graphs.
 
 As with features, `PartyData.graph_view_names` remains a coarse summary and
 must match the names in the party's detailed access entries. The resolved
-`GraphPartition`, seed, overlap statistics, visible counts, and checksum are
-run metadata. Two parties may reference the same graph and overlapping edge
-IDs without implying shared sample ownership.
+`GraphPartition` and checksum are in-memory inputs/identity; future recipes and
+execution may record seeds, overlap statistics, and visible counts. No result
+or partition persistence is added here. Two parties may reference the same
+graph and overlapping edge IDs without implying shared sample ownership.
 
 A common representation does not require gathering every party's private
 graph into a centralized bundle. Source graphs, future party-visible
@@ -497,8 +535,16 @@ mechanisms must establish authorized alignment and prevent held-out
 interaction leakage; structural validation and metadata declarations do not
 prove either. No cryptographic privacy guarantee is claimed.
 
-Graph preprocessing may eventually live in `src/data/graph.py`; deterministic
-partial-graph scenario construction may live beside it in
+Mutable canonical graphs must remain stable during validation and subsequent
+use. Identity recomputation does not provide an atomic snapshot or protect
+against later mutation. Hashes are trusted local bookkeeping, not automatically
+safe server telemetry or proof of semantic joins/leakage safety. Validation
+does not reconstruct the bundle or inspect unrelated feature/sample content.
+No `resolve_party_graph_views()` or other local projection API exists in G1a.
+Schema-`1.0` cache behavior is unchanged; nonempty graph payloads remain rejected.
+
+`src/data/graph.py` currently owns identities and access validation only;
+future deterministic partial-graph scenario construction may live beside it in
 `src/data/graph_scenarios.py`. GNNs, completion, propagation, graph losses,
 learned relation representations, and graph-aware aggregation stay under the
 1.2 method directory.
@@ -962,6 +1008,14 @@ The first implemented unit, **Phase 4C1**, is limited to `GraphView`, necessary
 `DatasetBundle` validation, exports, schema-`1.0` cache rejection, documentation,
 and synthetic contract/regression tests. The broader deliverables and access/
 leakage acceptance checks below remain future work, not claims about C1.
+
+The separately authorized **G1a** unit implements only immutable `GraphAccess`
+and `GraphPartition`, versioned graph/domain identities and partition checksum,
+strict whole-partition validation, exports, documentation, and synthetic tests.
+It does not add graph-partition fields to `DatasetBundle`, change source graph
+or feature contracts, resolve local payloads, generate scenarios, persist
+graphs, or integrate training. Feature row/field recipes and persistence are
+not prerequisites. G1b and research methods require separate review.
 
 - Likely files: `src/data/contracts.py`, `src/data/graph.py`,
   `src/data/graph_scenarios.py`, exports, tests, config validation, and the

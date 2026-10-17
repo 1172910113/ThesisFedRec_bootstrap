@@ -10,6 +10,8 @@ from src.data.contracts import (
     FeatureAccess,
     FeaturePartition,
     FeatureView,
+    GraphAccess,
+    GraphPartition,
     GraphView,
     InteractionSplits,
     InteractionTable,
@@ -23,6 +25,12 @@ from src.data.features import (
     feature_partition_checksum,
     resolve_party_feature_views,
     validate_feature_partition,
+)
+from src.data.graph import (
+    graph_domain_fingerprint,
+    graph_partition_checksum,
+    graph_view_fingerprint,
+    validate_graph_partition,
 )
 from src.data.loaders import (
     load_ml1m_ratings,
@@ -40,6 +48,8 @@ __all__ = [
     "FeatureAccess",
     "FeaturePartition",
     "FeatureView",
+    "GraphAccess",
+    "GraphPartition",
     "GraphView",
     "InteractionSplits",
     "InteractionTable",
@@ -50,6 +60,9 @@ __all__ = [
     "build_ml1m_item_genre_view",
     "build_single_view_absence_scenario",
     "feature_partition_checksum",
+    "graph_domain_fingerprint",
+    "graph_partition_checksum",
+    "graph_view_fingerprint",
     "iter_amazon_books_reviews",
     "leave_one_out_split",
     "load_ml1m_ratings",
@@ -61,4 +74,5 @@ __all__ = [
     "resolve_party_feature_views",
     "sample_negative_items",
     "validate_feature_partition",
+    "validate_graph_partition",
 ]

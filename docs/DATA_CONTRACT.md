@@ -230,7 +230,9 @@ Rules:
 The existing HFL builder defaults `graph_view_names` to all registered graph
 names in sorted order unless explicitly overridden. These are coarse summaries
 only: they do not enforce visibility or authorize delivery of private graph
-payloads. Phase 4C1 does not change this behavior or add graph-access validation.
+payloads. Phase 4C1 does not change this behavior. G1a adds a separate explicit
+`validate_graph_partition()` call (Section 11.1), not automatic validation or
+new graph-partition fields inside `DatasetBundle`.
 
 ---
 
@@ -864,12 +866,171 @@ access mechanisms must enforce source/protocol restrictions: validation/test
 interactions must not enter a training graph unless an explicitly approved
 experiment protocol permits and records this.
 
-Deferred, not Phase 4C1 fields or APIs: edge weights, node features and feature
-names, `GraphAccess`, `GraphPartition`, builders, resolvers, graph checksums,
-scenario generation, persistence, and training integration. A future
+Deferred beyond G1a: edge weights, node features and feature names, builders,
+resolvers, scenario generation, persistence, and training integration. A future
 PKGRec-compatible builder may require `item_to_node`; the canonical contract
 does not require it universally. PKGRec propagation, relation learning, and
 graph objectives remain method-owned.
+
+### 11.1 G1a: bound graph-access descriptors and strict validation
+
+G1a adds two frozen, slotted, keyword-only descriptors in `contracts.py`,
+exported through `src.data`. All `GraphPartition` arguments are required:
+
+```python
+GraphAccess(
+    *, view_name: str,
+    node_ids: np.ndarray | None = None,
+    edge_ids: np.ndarray | None = None,
+)
+GraphPartition(
+    *, name: str,
+    party_access: Mapping[int, tuple[GraphAccess, ...]],
+    source_graph_fingerprints: Mapping[str, str],
+    source_domain_fingerprint: str,
+    metadata: dict[str, Any],
+)
+```
+
+Selectors refer to canonical **node rows and edge columns**, never raw IDs or
+processed user/item IDs. `None` means all entries of the bound source domain;
+an empty `int64` array means no entries. An absent descriptor means no access
+to the view; a descriptor selecting zero nodes/edges still names a visible
+view. Explicit selections must be rank-one NumPy `int64` arrays, sorted,
+unique, and nonnegative. Invalid inputs fail without coercion, sorting,
+deduplication, endpoint closure, edge inference, or automatic inverse/self edges.
+Validation checks the actual NumPy element storage that is copied; array
+subclass masks do not hide IDs or act as additional permission selectors.
+There is no relation selector in G1a; explicit edge selections already identify
+their canonical relations. Relation-selection recipes are deferred.
+
+Constructor validation precedes copying selections into immutable bytes. Each
+getter returns a fresh one-dimensional, read-only NumPy array header over those
+bytes without copying the buffer again. Writes and `setflags(write=True)` fail;
+changes to one returned header's shape/dtype cannot affect another read or the
+stored permissions. Input array mutations likewise cannot change assignments.
+Party and source-binding mappings are read-only proxies over defensive copies,
+and descriptor collections are tuples. Duplicate view descriptors within a
+party fail. Names and binding keys must be nonblank strings. Party IDs are
+**exact built-in** nonnegative integers: bool, NumPy integers, and integer
+subclasses fail, even where older base contracts accept them.
+
+Fingerprint strings must be lowercase 64-character SHA-256 hex.
+`source_graph_fingerprints` binds exactly the union of descriptor view names,
+including explicitly empty selections: missing and extra bindings fail.
+No binding is inferred. Metadata is a shallow defensive dictionary copy;
+nested values may remain shared and mutable. It is descriptive only, never
+permission-bearing or part of an identity hash.
+
+The separate `src/data/graph.py` module exports:
+
+```python
+graph_view_fingerprint(view: GraphView) -> str
+graph_domain_fingerprint(bundle: DatasetBundle) -> str
+graph_partition_checksum(partition: GraphPartition) -> str
+validate_graph_partition(
+    partition: GraphPartition, bundle: DatasetBundle,
+    parties: Sequence[PartyData],
+) -> None
+```
+
+Validation checks the entire supplied roster and assignment, not just one
+party. Supplied party IDs may be non-contiguous; the existing embedded-bundle
+contiguous-party rule remains unchanged. Roster IDs must be unique and valid;
+every partition party must be in the roster, including empty mapping entries.
+Each roster party's unique, nonblank `graph_view_names` tuple must match its
+descriptor view-name set exactly. A known party with no descriptor is legal
+only with an empty coarse summary. Empty rosters/assignments are legal with
+valid domain binding and no extra source bindings.
+
+Every referenced graph registration must exist, contain a `GraphView`, and
+have matching key/name. Current `GraphView.validate()` checks are reused and
+non-None user/item mappings must cover the complete current processed domains.
+Both source fingerprints are recomputed: legal-but-changed arrays, ordered
+vocabularies, or same-sized namespace reassignments invalidate old bindings.
+All selected indices must be in range, and both endpoints of every selected
+edge must be selected nodes. For example, empty nodes with all edges fails
+unless the canonical graph has no edges; empty nodes with empty edges is valid.
+An invalid descriptor or source for another party also fails validation.
+
+This does not require injective mappings or particular node types, repair
+joins, or strengthen base `GraphView` rules. Empty graphs, isolated nodes,
+self-loops, reverse arcs, relation-distinct edges, unused vocabularies,
+optional/all-unmapped/many-to-one mappings remain legal. No full
+`DatasetBundle` reconstruction occurs; unrelated features, unreferenced graph
+entries, interactions, splits, and embedded-party/sample fields are not
+revalidated by this graph-specific API. Validation does not mutate inputs.
+
+### 11.2 G1a identity serialization, version 1
+
+Each identity is SHA-256 of the UTF-8 encoding of
+`json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))`.
+There is no trailing newline. Format tags are distinct and version is integer
+`1`. Array payloads are JSON null for `None`, otherwise exactly:
+
+```json
+{"shape": [2, 5], "dtype": "<i8", "sha256": "<lowercase SHA-256 of canonical bytes>"}
+```
+
+Canonical array bytes use little-endian signed int64 in C order, without
+changing source storage. Shape is a list of integer dimensions. Contiguous,
+Fortran, strided, and reversed storage with equal logical contents produce
+equal identities. Null, empty arrays, and arrays with different shapes remain
+distinct, even when their byte digests coincide. Raw IDs are objects exactly
+`{"type": "str", "value": raw_id}` or `{"type": "int", "value": raw_id}`.
+No Python `hash()`, repr, pickle, or arbitrary metadata serialization is used.
+
+Exact top-level payloads:
+
+| Identity | Exact keys and representation |
+|---|---|
+| Graph | `format="thesisfedrec.graph_view"`, `version=1`, `name`, `node_raw_ids` (ordered typed-ID list), `node_type_ids` (array payload), `node_type_names` (complete ordered string list), `edge_index` (array payload), `relation_ids` (array payload), `relation_names` (complete ordered string list), `user_to_node` and `item_to_node` (array payload or null) |
+| Domain | `format="thesisfedrec.graph_domain"`, `version=1`, `name` (dataset name), `schema_version`, `user_raw_ids` and `item_raw_ids` (typed-ID lists ordered by their existing processed IDs) |
+| Partition | `format="thesisfedrec.graph_partition"`, `version=1`, `source_domain_fingerprint`, `source_graph_fingerprints` (list of `{"view_name": name, "fingerprint": digest}` sorted by view name), `parties` (list described below) |
+
+Each partition party entry is exactly `{"party_id": id, "views": [...]}`,
+sorted by numeric party ID. Each view entry is exactly
+`{"view_name": name, "node_ids": array_or_null, "edge_ids": array_or_null}`,
+sorted by view name. Explicit empty party entries are retained. Scenario name
+and metadata are excluded; explicit-full and `None` selections remain distinct.
+Insertion order of dictionaries and descriptor tuples does not affect hashes.
+
+Graph fingerprinting revalidates current structure and preserves GraphView's
+exact built-in raw-ID rules. Node, edge, and vocabulary ordering contributes
+even for isomorphic topology; unused vocabulary entries also contribute.
+Graph name contributes, metadata does not. Domain fingerprinting reuses the
+existing ID-map validator: accepted str/int subclasses retain the corresponding
+value/type tag, not a new subclass tag or GraphView's stricter restriction.
+Processed values determine list order, not dictionary insertion order; no base
+map acceptance rules are strengthened. The domain digest does not identify or
+validate interactions, splits, source-time policy, semantic joins, or metadata.
+
+Pinned synthetic fixtures in `tests/test_graph_access.py` use an independent
+reference encoder with explicit payloads and `struct.pack("<q", value)` array
+bytes. Expected hashes are not obtained from production hash functions:
+
+| Fixture | SHA-256 |
+|---|---|
+| Typed four-node `rélations` graph with five explicit edges | `c40f4b42cb0eaf6b3aefe06a5cef8ead557216dfddcf6abd494ce1d1ab7f4290` |
+| `synthetic` / `1.0` domain: users `[10, "10"]`, items `["a", "b", 20]` | `6a63805491e8c59cf975d58c8edbf9a4c5d54287aabb16693d6985b3c2e661ec` |
+| Party 7 selecting nodes `[0,1,2]`, edges `[0,3]`; party 41 with no views; above source bindings | `cc1267584294164217f843d1adb4ccba8dd57b762a1a2734b015003937a73e85` |
+
+These functions recompute identities on each call; no reusable index, fast
+cache, runtime snapshot, or persistence is introduced. Graph checks scan current
+nodes/edges/mappings; domain checks scan user/item maps, not interaction or split
+arrays. Hashing can allocate canonical byte buffers and JSON payloads, so this
+is not a constant-memory or full-Books scalability claim. Sources and roster
+must remain stable during validation and subsequent use: no locks or concurrent
+mutation protection are provided. Descriptors are immutable configurations,
+not a security boundary against deliberate Python-internals bypasses.
+
+Hashes belong to **trusted local coordination** and are not automatically safe
+server telemetry: they bind private identities, topology, and assignments.
+Source graphs, future authorized local projections, and offline oracle data
+remain distinct. Private auxiliary IDs do not become shared identifiers.
+Neither matching hashes nor metadata prove authorization, semantic alignment,
+or absence of held-out interaction leakage. G1a performs no local projection,
+graph learning, privacy messaging, or cryptographic/OS access enforcement.
 
 ---
 
@@ -1041,10 +1202,12 @@ Creation time and machine hostname may be recorded for auditing but do not affec
 | `FeatureAccess` | `view_name` | `entity_ids` and `feature_names`; `None` means all canonical rows or fields |
 | `FeaturePartition` | All fields | `party_access` may be empty |
 | `GraphView` | `name`, `node_raw_ids`, `node_type_ids`, `node_type_names`, `edge_index`, `relation_ids`, `relation_names`, `metadata` | `user_to_node` and `item_to_node` default to `None`; weights/node features are deferred |
+| `GraphAccess` | `view_name` | `node_ids` and `edge_ids` default to `None`, meaning all entries of the bound canonical graph |
+| `GraphPartition` | All five fields in Section 11.1 | Party mapping may be empty; source bindings must match exactly the referenced views |
 | `ContinualStage` | All fields | Arrays may be empty only when documented |
 | `ContinualView` | All fields | None |
 
-Required containers are empty rather than `None`. `None` is reserved for genuinely unavailable optional values except for the explicit all-rows/all-fields semantics of `FeatureAccess`.
+Required containers are empty rather than `None`. `None` is reserved for genuinely unavailable optional values except for the explicit all-entry selectors of `FeatureAccess` and `GraphAccess`.
 
 ---
 
@@ -1083,7 +1246,9 @@ further bounded unit resolves explicit party access to detached local feature
 payloads (Section 10.4), without adding model-side consumption.
 Phase 4C1 adds only the canonical in-memory `GraphView`, structural and
 bundle-context validation, exports, and base-cache rejection of graph payloads.
-Graph access, builders, resolvers, and persistence remain future work.
+G1a adds separate immutable graph access/partition descriptors, content/domain
+fingerprints, an assignment checksum, and strict whole-partition validation
+(Sections 11.1-11.2). Graph builders, resolvers, and persistence remain future work.
 `ContinualView`, VFL, HyFL, and the complete derived-cache layout remain
 documented interfaces only.
 
@@ -1098,6 +1263,7 @@ src/data/
 ├── __init__.py
 ├── contracts.py
 ├── features.py
+├── graph.py             # G1a identities and access validation only
 ├── feature_scenarios.py  # first Phase 4B3 unit
 ├── ml1m_features.py      # standalone item-genres builder
 ├── preprocess.py
@@ -1115,6 +1281,8 @@ Responsibilities:
 - `features.py`: bundle-aware `FeaturePartition` validation, deterministic
   access-assignment checksums, and detached party-local payload resolution;
   no scenario generation or persistence;
+- `graph.py`: ordered canonical graph/domain fingerprints, bound graph-partition
+  checksum, and strict roster/source/endpoint validation; no payload resolution;
 - `feature_scenarios.py`: complete access and seeded single-view absence over
   existing canonical views, shallow party-summary copies, and assignment counts;
 - `ml1m_features.py`: strict ML1M movies metadata parsing and standalone

@@ -301,6 +301,124 @@ class GraphView:
             raise TypeError("GraphView metadata must be a dictionary")
 
 
+def _validate_graph_name(name: str, value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if not value.strip():
+        raise ValueError(f"{name} must be nonblank")
+
+
+def _validate_graph_party_id(party_id: int) -> None:
+    if type(party_id) is not int or party_id < 0:
+        raise ValueError("graph party IDs must be exact built-in nonnegative integers")
+
+
+def _validate_graph_fingerprint(name: str, value: str) -> None:
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    if len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError(f"{name} must be lowercase 64-character SHA-256 hex")
+
+
+def _graph_selection_bytes(name: str, values: np.ndarray | None) -> bytes | None:
+    if values is None:
+        return None
+    if not isinstance(values, np.ndarray):
+        raise TypeError(f"{name} must be a NumPy array")
+    # Validate the actual element storage that will be copied. In particular,
+    # ndarray subclass masks must not hide negative or repeated IDs from checks.
+    plain = np.asarray(values)
+    _validate_sorted_unique(name, plain)
+    if np.any(plain < 0):
+        raise ValueError(f"{name} must be nonnegative")
+    return plain.tobytes(order="C")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True, init=False)
+class GraphAccess:
+    """Immutable canonical node-row/edge-column selections, not local payloads."""
+
+    view_name: str
+    _node_ids_bytes: bytes | None = field(repr=False)
+    _edge_ids_bytes: bytes | None = field(repr=False)
+
+    def __init__(
+        self,
+        *,
+        view_name: str,
+        node_ids: np.ndarray | None = None,
+        edge_ids: np.ndarray | None = None,
+    ) -> None:
+        _validate_graph_name("GraphAccess view_name", view_name)
+        nodes = _graph_selection_bytes("GraphAccess node_ids", node_ids)
+        edges = _graph_selection_bytes("GraphAccess edge_ids", edge_ids)
+        object.__setattr__(self, "view_name", view_name)
+        object.__setattr__(self, "_node_ids_bytes", nodes)
+        object.__setattr__(self, "_edge_ids_bytes", edges)
+
+    @property
+    def node_ids(self) -> np.ndarray | None:
+        """Return an independent read-only header over immutable selection bytes."""
+        if self._node_ids_bytes is None:
+            return None
+        return np.frombuffer(self._node_ids_bytes, dtype=np.int64)
+
+    @property
+    def edge_ids(self) -> np.ndarray | None:
+        """Return an independent read-only header over immutable selection bytes."""
+        if self._edge_ids_bytes is None:
+            return None
+        return np.frombuffer(self._edge_ids_bytes, dtype=np.int64)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GraphPartition:
+    """Immutable access/bindings outside DatasetBundle; metadata is descriptive."""
+
+    name: str
+    party_access: Mapping[int, tuple[GraphAccess, ...]]
+    source_graph_fingerprints: Mapping[str, str]
+    source_domain_fingerprint: str
+    metadata: Metadata
+
+    def __post_init__(self) -> None:
+        _validate_graph_name("GraphPartition name", self.name)
+        if not isinstance(self.party_access, Mapping):
+            raise TypeError("GraphPartition party_access must be a mapping")
+        copied_access: dict[int, tuple[GraphAccess, ...]] = {}
+        referenced_names: set[str] = set()
+        for party_id, accesses in self.party_access.items():
+            _validate_graph_party_id(party_id)
+            if not isinstance(accesses, tuple) or any(
+                not isinstance(access, GraphAccess) for access in accesses
+            ):
+                raise TypeError("graph access entries must be tuples of GraphAccess")
+            names = [access.view_name for access in accesses]
+            if len(set(names)) != len(names):
+                raise ValueError("GraphPartition contains duplicate party/view access")
+            referenced_names.update(names)
+            copied_access[party_id] = tuple(accesses)
+
+        if not isinstance(self.source_graph_fingerprints, Mapping):
+            raise TypeError("source_graph_fingerprints must be a mapping")
+        copied_fingerprints = dict(self.source_graph_fingerprints)
+        for view_name, fingerprint in copied_fingerprints.items():
+            _validate_graph_name("source graph binding name", view_name)
+            _validate_graph_fingerprint("source graph fingerprint", fingerprint)
+        if set(copied_fingerprints) != referenced_names:
+            raise ValueError("source graph bindings must match exactly referenced views")
+        _validate_graph_fingerprint(
+            "source_domain_fingerprint", self.source_domain_fingerprint
+        )
+        if not isinstance(self.metadata, dict):
+            raise TypeError("GraphPartition metadata must be a dictionary")
+        object.__setattr__(self, "party_access", MappingProxyType(copied_access))
+        object.__setattr__(
+            self, "source_graph_fingerprints", MappingProxyType(copied_fingerprints)
+        )
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+
 @dataclass(frozen=True, slots=True, kw_only=True, init=False)
 class FeatureAccess:
     """Frozen selection exposing independent NumPy views of immutable ID bytes."""
