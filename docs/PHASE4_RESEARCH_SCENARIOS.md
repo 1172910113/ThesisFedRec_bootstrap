@@ -66,7 +66,7 @@ The relevant existing data seams are deliberately incomplete:
 - `PartyData.feature_view_names` and `graph_view_names` remain coarse visible-
   view summaries; Phase 4B2 adds separate feature row/field access, while
   G1a adds bound graph node/edge access descriptors and strict validation,
-  while graph payload delivery remains future work;
+  and G1b adds strict detached party-local graph delivery;
 - the base cache serializes only interactions, splits, and mappings under
   schema `1.0`;
 - the Phase 3 runner is explicitly FedGMF/HFL and initializes one run from
@@ -444,7 +444,7 @@ safety. Metadata is a dictionary, not a verified provenance declaration.
 Future builders must record and enforce construction/source-split policies;
 metadata alone cannot prove that held-out interactions did not enter a graph.
 
-Weights, node features, builders/resolvers, scenario generators, persistence,
+Weights, node features, builders, scenario generators, persistence,
 models, and training integration are deferred. Graph access descriptors are
 implemented separately by G1a below; they do not change GraphView mutability. C1
 needs neither unfinished feature row/field recipes nor feature persistence.
@@ -547,14 +547,57 @@ use. Identity recomputation does not provide an atomic snapshot or protect
 against later mutation. Hashes are trusted local bookkeeping, not automatically
 safe server telemetry or proof of semantic joins/leakage safety. Validation
 does not reconstruct the bundle or inspect unrelated feature/sample content.
-No `resolve_party_graph_views()` or other local projection API exists in G1a.
+G1a itself adds no local projection API; G1b is the separate delivery unit below.
 Schema-`1.0` cache behavior is unchanged; nonempty graph payloads remain rejected.
 
-`src/data/graph.py` currently owns identities and access validation only;
+`src/data/graph.py` owns identities, access validation, and strict local projection;
 future deterministic partial-graph scenario construction may live beside it in
 `src/data/graph_scenarios.py`. GNNs, completion, propagation, graph losses,
 learned relation representations, and graph-aware aggregation stay under the
 1.2 method directory.
+
+### 5.3 G1b strict detached graph delivery
+
+`resolve_party_graph_views(bundle, partition, parties, *, party_id)` in
+`src/data/graph.py`, exported through `src.data`, returns a lexically ordered
+plain dictionary of detached local `GraphView` objects. It reuses complete G1a
+validation and source/domain bindings on every call, including when the known
+requested party has no access. Unknown parties fail; non-contiguous exact
+built-in nonnegative party IDs are supported independently of sample ownership.
+
+Only authorized selected nodes and edges are projected, in canonical order.
+There is no induced-edge inference or endpoint repair. Endpoints become local
+node positions; raw IDs are replaced by `"n0"`, `"n1"`, ... even for full access.
+The public source name, type/relation IDs, and complete ordered vocabularies
+remain. Non-None user/item mappings retain their complete processed-domain
+lengths, mapping selected nodes to local positions and other entries to `-1`;
+None and many-to-one mappings retain their meanings. Public anchor links are
+not hidden by local labels, and equal labels across parties/views are not an
+identity join. The exact rules are in `DATA_CONTRACT.md` Section 11.3.
+
+All returned arrays own fresh plain-int64 storage without source/base chains;
+output metadata is a fresh `{}`. No source raw IDs, canonical positions, inverse
+lookups, fingerprints, or arbitrary metadata are forwarded. G1a subclass
+rejection remains; delivery additionally rejects dtype metadata and non-built-in
+public name strings on every referenced source, including empty selections and
+sources used only by other parties. Output tuples/dictionaries are plain.
+
+Source and assignment objects remain unchanged. Output edits cannot affect
+another party/call or canonical data; source edits cannot change an earlier
+output. Later calls still require valid current bindings. Inputs must stay
+stable during a call: no atomic snapshot, concurrent-write protection, or
+cryptographic privacy guarantee is introduced. This does not certify semantic
+joins or absence of held-out interaction leakage in a source graph.
+
+The strict path scans all bound sources and processed domains on every call.
+In addition to G1a's hashing allocations it needs a temporary source-node-sized
+lookup per projected view, selected arrays, and complete non-None user/item
+mapping outputs/remapping workspace. It projects only the requested party;
+it is not constant-memory or O(batch). No eager all-party projections, dense
+item-by-item adjacency, persistent cache, graph builder, model, or training
+integration is added. G2/G3 remain separately scoped. Synthetic acceptance
+uses an independent Python reference projector and explicit mutation/isolation
+checks; it is not evidence of recommendation quality or full-data scalability.
 
 ## 6. Block 2.1: ParameterUpdatePolicy
 
@@ -1022,7 +1065,10 @@ strict whole-partition validation, exports, documentation, and synthetic tests.
 It does not add graph-partition fields to `DatasetBundle`, change source graph
 or feature contracts, resolve local payloads, generate scenarios, persist
 graphs, or integrate training. Feature row/field recipes and persistence are
-not prerequisites. G1b and research methods require separate review.
+not prerequisites. The separately scoped G1b unit adds only the strict detached
+projection in Section 5.3, preserving canonical/access contracts, fingerprints,
+cache behavior and the frozen training path. Indexed delivery, graph builders,
+and research methods require separate review.
 
 - Likely files: `src/data/contracts.py`, `src/data/graph.py`,
   `src/data/graph_scenarios.py`, exports, tests, config validation, and the

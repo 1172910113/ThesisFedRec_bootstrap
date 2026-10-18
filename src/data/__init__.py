@@ -30,6 +30,7 @@ from src.data.graph import (
     graph_domain_fingerprint,
     graph_partition_checksum,
     graph_view_fingerprint,
+    resolve_party_graph_views,
     validate_graph_partition,
 )
 from src.data.loaders import (
@@ -72,6 +73,7 @@ __all__ = [
     "resolve_data_path",
     "resolve_data_root",
     "resolve_party_feature_views",
+    "resolve_party_graph_views",
     "sample_negative_items",
     "validate_feature_partition",
     "validate_graph_partition",

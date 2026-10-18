@@ -1,4 +1,4 @@
-"""Graph access identities and strict validation; no projection or persistence."""
+"""Graph identities, strict access validation, and detached local projection."""
 
 import hashlib
 import json
@@ -9,6 +9,7 @@ import numpy as np
 
 from src.data.contracts import (
     DatasetBundle,
+    GraphAccess,
     GraphPartition,
     GraphView,
     PartyData,
@@ -214,3 +215,90 @@ def validate_graph_partition(
                     raise ValueError(
                         f"GraphAccess {access.view_name!r} has endpoints outside selected nodes"
                     )
+
+
+def _validate_graph_delivery(view: GraphView) -> None:
+    # G1a has already checked current plain-array structure and source binding.
+    # Apply delivery restrictions even to empty or other parties' selections.
+    if any(type(name) is not str for name in (
+        view.name, *view.node_type_names, *view.relation_names,
+    )):
+        raise TypeError("graph delivery view/vocabulary names must be plain built-in strings")
+    for field_name in (
+        "node_type_ids", "edge_index", "relation_ids", "user_to_node", "item_to_node",
+    ):
+        array = getattr(view, field_name)
+        if array is not None and array.dtype.metadata is not None:
+            raise TypeError(f"GraphView {view.name!r} {field_name} has unsupported dtype metadata")
+
+
+def _project_graph_mapping(
+    mapping: np.ndarray | None, local_ids: np.ndarray,
+) -> np.ndarray | None:
+    if mapping is None:
+        return None
+    projected = np.full(mapping.shape, -1, dtype=np.int64)
+    mapped = mapping >= 0
+    projected[mapped] = local_ids[mapping[mapped]]
+    return projected
+
+
+def _project_graph_view(view: GraphView, access: GraphAccess) -> GraphView:
+    nodes, edges = access.node_ids, access.edge_ids
+    if nodes is None:
+        nodes = np.arange(len(view.node_raw_ids), dtype=np.int64)
+    edge_selection = slice(None) if edges is None else edges
+    # Temporary canonical-to-local lookup, never exposed or retained. All
+    # selected endpoints have already been authorized by strict validation.
+    local_ids = np.full(len(view.node_raw_ids), -1, dtype=np.int64)
+    local_ids[nodes] = np.arange(len(nodes), dtype=np.int64)
+    return GraphView(
+        name=view.name,
+        node_raw_ids=tuple(f"n{index}" for index in range(len(nodes))),
+        node_type_ids=np.array(view.node_type_ids[nodes], dtype=np.int64, copy=True),
+        node_type_names=tuple(name for name in view.node_type_names),
+        edge_index=np.array(
+            local_ids[view.edge_index[:, edge_selection]], dtype=np.int64, copy=True,
+            order="C",
+        ),
+        relation_ids=np.array(view.relation_ids[edge_selection], dtype=np.int64, copy=True),
+        relation_names=tuple(name for name in view.relation_names),
+        user_to_node=_project_graph_mapping(view.user_to_node, local_ids),
+        item_to_node=_project_graph_mapping(view.item_to_node, local_ids),
+        metadata={},
+    )
+
+
+def resolve_party_graph_views(
+    bundle: DatasetBundle,
+    partition: GraphPartition,
+    parties: Sequence[PartyData],
+    *,
+    party_id: int,
+) -> dict[str, GraphView]:
+    """Return detached, locally relabeled projections for one explicit party.
+
+    Validate the complete partition and all bound sources on every call, even
+    for an empty result. Delivery rejects dtype metadata and non-built-in
+    public names on every referenced source. Arrays own their storage; metadata
+    is empty. Public vocabularies and full recommendation-anchor domains remain
+    visible, so local node labels do not provide cryptographic anonymity.
+
+    Sources/roster must stay stable during the call. No cache, atomic snapshot,
+    concurrent-write guarantee, or training integration is provided. Validation
+    scans all bound sources/domains; projection additionally allocates a lookup
+    per requested graph and complete non-None user/item mapping outputs.
+    """
+    _validate_graph_party_id(party_id)
+    validate_graph_partition(partition, bundle, parties)
+    if not any(party.party_id == party_id for party in parties):
+        raise ValueError(f"unknown requested party_id {party_id}")
+    for name in sorted(partition.source_graph_fingerprints):
+        _validate_graph_delivery(bundle.graph_views[name])
+    resolved: dict[str, GraphView] = {}
+    for access in sorted(
+        partition.party_access.get(party_id, ()), key=lambda entry: entry.view_name,
+    ):
+        view = _project_graph_view(bundle.graph_views[access.view_name], access)
+        resolved[view.name] = view
+    return resolved

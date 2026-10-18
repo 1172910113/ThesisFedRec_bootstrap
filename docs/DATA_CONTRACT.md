@@ -866,8 +866,8 @@ access mechanisms must enforce source/protocol restrictions: validation/test
 interactions must not enter a training graph unless an explicitly approved
 experiment protocol permits and records this.
 
-Deferred beyond G1a: edge weights, node features and feature names, builders,
-resolvers, scenario generation, persistence, and training integration. A future
+Deferred beyond G1b: edge weights, node features and feature names, builders,
+scenario generation, persistence, and training integration. A future
 PKGRec-compatible builder may require `item_to_node`; the canonical contract
 does not require it universally. PKGRec propagation, relation learning, and
 graph objectives remain method-owned.
@@ -1047,6 +1047,85 @@ remain distinct. Private auxiliary IDs do not become shared identifiers.
 Neither matching hashes nor metadata prove authorization, semantic alignment,
 or absence of held-out interaction leakage. G1a performs no local projection,
 graph learning, privacy messaging, or cryptographic/OS access enforcement.
+
+### 11.3 G1b: strict detached party-local graph projection
+
+`src/data/graph.py` exports through `src.data`:
+
+```python
+resolve_party_graph_views(
+    bundle: DatasetBundle,
+    partition: GraphPartition,
+    parties: Sequence[PartyData],
+    *,
+    party_id: int,
+) -> dict[str, GraphView]
+```
+
+This is the strict reference delivery path, separate from model consumption.
+Every call reuses `validate_graph_partition()` over the complete supplied
+roster, all assignments, and every bound source. Invalid access or stale graph/
+domain bindings belonging to another party also fail. The requested party ID
+must be an exact built-in nonnegative integer and occur in the supplied roster;
+non-contiguous IDs are valid and sample ownership never determines graph access.
+A known party with no descriptors returns a fresh `{}` only after validation.
+An unknown party raises. The resolver does not attach outputs to the bundle.
+
+The returned plain dictionary is ordered lexically by public view name. Each
+descriptor produces a fresh `GraphView`, even for an explicitly empty graph;
+an absent descriptor produces no entry. `None` selects the full bound canonical
+node/edge domain, while empty selectors select nothing. Selected nodes and
+edges retain canonical order. Only explicitly selected edges are emitted;
+authorized endpoints do not imply induced edges. No endpoint closure, extra
+nodes, reverse arcs, self-loops, sorting by raw IDs, or repair is performed.
+Strict validation first requires both endpoints of every selected edge to be
+authorized, then projection remaps endpoints to contiguous local node positions.
+Node-type and relation IDs and the complete ordered vocabularies, including
+unused entries, are preserved.
+
+Every source raw node identifier is replaced by an exact built-in string
+`"n0"`, `"n1"`, ... in local node order, including for full access. These labels
+are local to the bound source/party/view: equal labels in different deliveries
+do not establish shared identity. The output name is the bound public source
+name. For each optional user/item mapping independently, `None` stays `None`;
+otherwise the complete processed-namespace length is retained. References to
+selected nodes become local positions; unmapped or unselected nodes become
+`-1`. Valid many-to-one mappings remain valid. Complete recommendation-anchor
+namespaces and complete vocabularies are public assumptions of this profile;
+local labels do not conceal permitted anchor links or guarantee anonymity.
+
+Every output array is an exact plain `np.ndarray` with plain `int64` dtype,
+owned mutable storage, and no `.base` chain, even for full and empty selections.
+Arrays share no mutable buffers with sources, selectors, other output arrays,
+parties, or calls. Output tuples/dictionaries are plain containers. Metadata
+is always a fresh empty dictionary, never copied from the source or partition.
+Original raw IDs, canonical node/edge positions, inverse lookups, source
+fingerprints and arbitrary metadata are not delivered. Source/domain identity
+and provenance remain with trusted framework bookkeeping.
+
+In addition to G1a's unchanged canonical ndarray-subclass rejection, delivery
+rejects dtype metadata (including `{}`) on all five canonical integer arrays
+and non-built-in strings in source view names or either public vocabulary.
+These restrictions apply to **every referenced source**, including unused
+vocabulary entries, empty selections and sources assigned only to other parties.
+Unreferenced views are not inspected. Canonical acceptance, selector semantics,
+hash schemas/fixtures, and base-cache schema `1.0` are unchanged.
+
+Successful and failed calls leave inputs unchanged. Outputs remain mutable;
+later output edits cannot affect sources or another delivery, and later source
+edits cannot affect an existing output. Subsequent calls revalidate current
+data against supplied bindings: valid source changes require explicit rebinding.
+Inputs must remain stable during a call. This is not an atomic snapshot,
+concurrent-write guarantee, privacy protocol, or proof of leakage-free sources.
+
+This strict path recomputes graph/domain identities and validates the whole
+partition on each call, scanning bound graph arrays and processed ID maps.
+Hashing retains its canonical-byte/JSON allocation cost. Projection materializes
+only the requested party's views but allocates a temporary source-node-sized
+canonical-to-local lookup per view, selected node/edge outputs, and full-length
+non-None user/item mappings plus remapping workspace. It is neither constant-
+memory nor O(batch) delivery. G2's indexed fast path, runtime handles, persistence,
+builders, scenarios, graph learning, and training integration remain deferred.
 
 ---
 
@@ -1264,7 +1343,8 @@ Phase 4C1 adds only the canonical in-memory `GraphView`, structural and
 bundle-context validation, exports, and base-cache rejection of graph payloads.
 G1a adds separate immutable graph access/partition descriptors, content/domain
 fingerprints, an assignment checksum, and strict whole-partition validation
-(Sections 11.1-11.2). Graph builders, resolvers, and persistence remain future work.
+(Sections 11.1-11.2). G1b adds only strict detached party-local projection
+(Section 11.3). Graph builders, indexed delivery, and persistence remain future work.
 `ContinualView`, VFL, HyFL, and the complete derived-cache layout remain
 documented interfaces only.
 
@@ -1279,7 +1359,7 @@ src/data/
 ├── __init__.py
 ├── contracts.py
 ├── features.py
-├── graph.py             # G1a identities and access validation only
+├── graph.py             # G1a identities/validation; G1b strict local projection
 ├── feature_scenarios.py  # first Phase 4B3 unit
 ├── ml1m_features.py      # standalone item-genres builder
 ├── preprocess.py
@@ -1298,7 +1378,8 @@ Responsibilities:
   access-assignment checksums, and detached party-local payload resolution;
   no scenario generation or persistence;
 - `graph.py`: ordered canonical graph/domain fingerprints, bound graph-partition
-  checksum, and strict roster/source/endpoint validation; no payload resolution;
+  checksum, strict roster/source/endpoint validation, and detached local graph
+  projection; no builders, reusable runtime index, or persistence;
 - `feature_scenarios.py`: complete access and seeded single-view absence over
   existing canonical views, shallow party-summary copies, and assignment counts;
 - `ml1m_features.py`: strict ML1M movies metadata parsing and standalone
