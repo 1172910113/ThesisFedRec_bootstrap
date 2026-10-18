@@ -45,9 +45,21 @@ def _typed_raw_id(raw_id: RawId) -> dict[str, Any]:
 
 
 def graph_view_fingerprint(view: GraphView) -> str:
-    """Revalidate and hash ordered current graph content, excluding metadata."""
+    """Revalidate and hash plain-array graph content, excluding metadata."""
     if not isinstance(view, GraphView):
         raise TypeError("view must be a GraphView")
+    # Subclass reductions/indexing can disagree with the underlying content
+    # hashed by np.asarray (notably masked arrays). Reject them before either
+    # structural validation or downstream partition endpoint/mapping checks.
+    for field_name in (
+        "node_type_ids", "edge_index", "relation_ids", "user_to_node", "item_to_node",
+    ):
+        array = getattr(view, field_name)
+        if isinstance(array, np.ndarray) and type(array) is not np.ndarray:
+            raise TypeError(
+                f"GraphView {field_name} must be a plain NumPy ndarray for G1a; "
+                "array subclasses (including masked arrays) are unsupported"
+            )
     view.validate()
     return _json_fingerprint({
         "format": "thesisfedrec.graph_view",

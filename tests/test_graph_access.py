@@ -158,6 +158,92 @@ def test_fixed_reference_hashes(bundle):
     assert graph_partition_checksum(partition) == expected[2]
 
 
+def _check_current_array(bundle, field, public_path):
+    view = bundle.graph_views["rélations"]
+    if public_path == "fingerprint":
+        return graph_view_fingerprint(view)
+    # Only this array differs from the fixed fixture. Bind its underlying
+    # current content independently, so a stale hash cannot mask the defect.
+    payload = _reference_payloads()[0]
+    array = np.asarray(getattr(view, field))
+    payload[field] = _reference_array(list(array.shape), array.ravel().tolist())
+    partition = GraphPartition(
+        name="current-content", party_access={7: (GraphAccess(view_name=view.name),)},
+        source_graph_fingerprints={view.name: _reference_hash(payload)},
+        source_domain_fingerprint=_EXPECTED_HASHES[1], metadata={},
+    )
+    return validate_graph_partition(partition, bundle, (_party(),))
+
+
+@pytest.mark.parametrize("public_path", ["fingerprint", "partition"])
+@pytest.mark.parametrize("field", [
+    "node_type_ids", "edge_index", "relation_ids", "user_to_node", "item_to_node",
+])
+@pytest.mark.parametrize("invalid", [99, -2])
+def test_g1a_rejects_masked_invalid_canonical_arrays(bundle, public_path, field, invalid):
+    view = bundle.graph_views["rélations"]
+    supplied = np.ma.array(getattr(view, field), mask=False, copy=True)
+    supplied.data.flat[0] = invalid
+    supplied.mask.flat[0] = True
+    # Canonical views are mutable: check a replacement after construction.
+    setattr(view, field, supplied)
+    before_values = supplied.data.copy()
+    before_mask = supplied.mask.copy()
+    metadata = view.metadata
+    metadata_values = dict(metadata)
+    with pytest.raises(TypeError, match=f"{field}.*plain NumPy ndarray"):
+        _check_current_array(bundle, field, public_path)
+    assert getattr(view, field) is supplied
+    assert view.metadata is metadata and view.metadata == metadata_values
+    np.testing.assert_array_equal(supplied.data, before_values)
+    np.testing.assert_array_equal(supplied.mask, before_mask)
+
+
+class _ArraySubclass(np.ndarray):
+    pass
+
+
+@pytest.mark.parametrize("public_path", ["fingerprint", "partition"])
+@pytest.mark.parametrize("field", [
+    "node_type_ids", "edge_index", "relation_ids", "user_to_node", "item_to_node",
+])
+@pytest.mark.parametrize("representation", ["masked", "all_false", "unmasked", "subclass"])
+def test_g1a_rejects_otherwise_valid_array_subclasses(bundle, public_path, field, representation):
+    view = bundle.graph_views["rélations"]
+    original = getattr(view, field)
+    if representation == "subclass":
+        supplied = original.view(_ArraySubclass)
+    else:
+        mask = {
+            "masked": np.ones(original.shape, dtype=bool),
+            "all_false": np.zeros(original.shape, dtype=bool),
+            "unmasked": np.ma.nomask,
+        }[representation]
+        supplied = np.ma.array(
+            original, mask=mask,
+        )
+    setattr(view, field, supplied)
+    before_mask = np.ma.getmaskarray(supplied).copy()
+    with pytest.raises(TypeError, match=f"{field}.*plain NumPy ndarray"):
+        _check_current_array(bundle, field, public_path)
+    assert getattr(view, field) is supplied
+    np.testing.assert_array_equal(np.asarray(supplied), original)
+    np.testing.assert_array_equal(np.ma.getmaskarray(supplied), before_mask)
+
+
+@pytest.mark.parametrize("field", ["user_to_node", "item_to_node"])
+@pytest.mark.parametrize("value", [-1, 0, 3])
+def test_g1a_plain_mapping_boundaries_remain_valid(bundle, field, value):
+    view = bundle.graph_views["rélations"]
+    mapping = np.full_like(getattr(view, field), value)
+    setattr(view, field, mapping)
+    before = mapping.copy()
+    assert len(_check_current_array(bundle, field, "fingerprint")) == 64
+    assert _check_current_array(bundle, field, "partition") is None
+    assert getattr(view, field) is mapping
+    np.testing.assert_array_equal(mapping, before)
+
+
 @pytest.mark.parametrize("field", ["node_ids", "edge_ids"])
 @pytest.mark.parametrize("invalid, error", [
     ([0], TypeError), ((0,), TypeError), (1, TypeError),
@@ -578,7 +664,7 @@ def test_metadata_names_and_insertion_order_identity_rules(bundle):
     assert graph_view_fingerprint(replace(second, name="renamed")) != source
 
 
-@pytest.mark.parametrize("layout", ["strided", "fortran", "negative_stride"])
+@pytest.mark.parametrize("layout", ["strided", "fortran", "negative_stride", "read_only"])
 def test_array_storage_layout_and_fingerprinting_do_not_change_sources(bundle, layout):
     original = bundle.graph_views["rélations"]
     view = deepcopy(original)
@@ -587,6 +673,9 @@ def test_array_storage_layout_and_fingerprinting_do_not_change_sources(bundle, l
         array = getattr(view, name)
         if layout == "fortran":
             changed = np.asfortranarray(array)
+        elif layout == "read_only":
+            changed = array.copy()
+            changed.setflags(write=False)
         elif layout == "negative_stride":
             changed = array[..., ::-1].copy()[..., ::-1]
         else:
@@ -603,6 +692,8 @@ def test_array_storage_layout_and_fingerprinting_do_not_change_sources(bundle, l
         assert getattr(view, name) is array
         assert array.strides == strides and array.__array_interface__["data"] == pointer
         assert array.dtype == np.int64
+        if layout == "read_only":
+            assert not array.flags.writeable
         np.testing.assert_array_equal(array, values)
 
 

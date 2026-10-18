@@ -953,6 +953,22 @@ edge must be selected nodes. For example, empty nodes with all edges fails
 unless the canonical graph has no edges; empty nodes with empty edges is valid.
 An invalid descriptor or source for another party also fails validation.
 
+In `graph_view_fingerprint()` and `validate_graph_partition()`, canonical
+`node_type_ids`, `edge_index`, `relation_ids`, `user_to_node`, and
+`item_to_node` arrays must be plain `np.ndarray` instances, not subclasses.
+`None` remains legal for the optional mappings. All ndarray subclasses are
+rejected with `TypeError`, including
+otherwise valid masked arrays with active masks, all-false masks, or no mask.
+This check precedes structural validation, fingerprinting, and strict partition
+endpoint/mapping checks, so masked reductions or subclass indexing cannot
+validate different content from the bytes hashed. No masks are filled and no
+values are coerced, clipped, dropped, or repaired. Existing rank/dtype/range
+checks still apply; lists and floating arrays are not silently converted.
+Ordinary non-contiguous/read-only arrays remain supported. Inputs, masks,
+metadata, and references are unchanged. This G1a representation restriction
+does not modify `GraphView`/`DatasetBundle` validators or selector semantics;
+the existing no-concurrent-write precondition still applies.
+
 This does not require injective mappings or particular node types, repair
 joins, or strengthen base `GraphView` rules. Empty graphs, isolated nodes,
 self-loops, reverse arcs, relation-distinct edges, unused vocabularies,

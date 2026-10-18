@@ -501,7 +501,14 @@ Sample ownership and existing `DatasetBundle` embedded-party rules are unchanged
 
 Current graph structure is revalidated, with complete processed-namespace
 mapping lengths. Optional/all-unmapped/many-to-one mappings and all legal base
-graph cases remain supported; no M2 injective-anchor rule is introduced.
+graph cases remain supported using plain canonical NumPy arrays; no M2
+injective-anchor rule is introduced. Graph fingerprinting and strict partition
+validation reject ndarray subclasses, including masked arrays whether masked
+or unmasked, consistently across node types, endpoints, relations, and optional
+mappings. This prevents
+validation/indexing semantics from differing from hashed content, without
+changing the base validators or repairing inputs; see `DATA_CONTRACT.md`
+Section 11.1.
 Graph identity includes ordered raw identities/types, arrays, complete ordered
 vocabularies, optional mappings, and graph name. Domain identity includes dataset
 name/schema and typed raw IDs in processed-ID order. Thus same-size ID
