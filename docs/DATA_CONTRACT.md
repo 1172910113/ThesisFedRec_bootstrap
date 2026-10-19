@@ -1106,6 +1106,11 @@ and provenance remain with trusted framework bookkeeping.
 In addition to G1a's unchanged canonical ndarray-subclass rejection, delivery
 rejects dtype metadata (including `{}`) on all five canonical integer arrays
 and non-built-in strings in source view names or either public vocabulary.
+Access view names and source-binding view-name keys must also be exact built-in
+strings. A resolver-only, unsorted preflight checks every binding key and every
+party's access names before invoking G1a validation, whose binding-key sort
+could otherwise call subclass comparators. Rejection raises `TypeError` without
+coercion; the complete existing validation still follows for supported names.
 These restrictions apply to **every referenced source**, including unused
 vocabulary entries, empty selections and sources assigned only to other parties.
 Unreferenced views are not inspected. Canonical acceptance, selector semantics,

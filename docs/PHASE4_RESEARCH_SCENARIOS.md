@@ -581,6 +581,11 @@ lookups, fingerprints, or arbitrary metadata are forwarded. G1a subclass
 rejection remains; delivery additionally rejects dtype metadata and non-built-in
 public name strings on every referenced source, including empty selections and
 sources used only by other parties. Output tuples/dictionaries are plain.
+Access view names and binding view-name keys must likewise be exact built-in
+strings across the whole partition, even for a requested party with no access.
+An unsorted resolver preflight rejects subclasses with `TypeError` before G1a
+validation can sort binding keys; it neither coerces names nor replaces the
+existing complete validator. G1a constructors and identity formats are unchanged.
 
 Source and assignment objects remain unchanged. Output edits cannot affect
 another party/call or canonical data; source edits cannot change an earlier

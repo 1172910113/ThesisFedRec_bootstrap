@@ -314,6 +314,122 @@ class _StringSubclass(str):
     pass
 
 
+class _ReverseString(str):
+    comparisons = []
+
+    def __lt__(self, other):
+        self.comparisons.append((self, other))
+        return str.__gt__(self, other)
+
+
+class _RaisingString(str):
+    comparisons = []
+    armed = False
+
+    def __lt__(self, other):
+        self.comparisons.append((self, other))
+        if self.armed:
+            raise AssertionError("resolver invoked a subclass comparator")
+        return str.__lt__(self, other)
+
+
+@pytest.mark.parametrize("location", ["access", "binding"])
+@pytest.mark.parametrize("string_type", [_ReverseString, _RaisingString, _StringSubclass])
+@pytest.mark.parametrize("mode", ["full", "empty", "other_party", "no_access"])
+def test_delivery_assignment_names_reject_subclasses_before_sorting(
+    bundle, monkeypatch, location, string_type, mode,
+):
+    comparisons = []
+    if string_type is not _StringSubclass:
+        monkeypatch.setattr(string_type, "comparisons", comparisons)
+    monkeypatch.setattr(_RaisingString, "armed", False)
+    names = ("zeta", "alpha")
+    bundle.graph_views.update({name: _graph(name=name) for name in names})
+    accesses = tuple(
+        _access(
+            [] if mode == "empty" else None, [] if mode == "empty" else None,
+            name=string_type(name) if location == "access" else name,
+        )
+        for name in names
+    )
+    other_party = mode in ("other_party", "no_access")
+    owner = 41 if other_party else 7
+    assignments = {owner: accesses}
+    parties = (_party(owner, names),)
+    bindings = {
+        string_type(name) if location == "binding" else name:
+        graph_view_fingerprint(bundle.graph_views[name])
+        for name in names
+    }
+    if other_party:
+        assignments[7] = (_access(),) if mode == "other_party" else ()
+        parties += (_party(7, ("relations",) if assignments[7] else ()),)
+        if assignments[7]:
+            bindings["relations"] = graph_view_fingerprint(bundle.graph_views["relations"])
+    partition = GraphPartition(
+        name="name-guard", party_access=assignments,
+        source_graph_fingerprints=bindings,
+        source_domain_fingerprint=graph_domain_fingerprint(bundle),
+        metadata={"nested": ["unchanged"]},
+    )
+    # These are current, structurally valid G1a inputs, not stale bindings.
+    validate_graph_partition(partition, bundle, parties)
+    assert all(type(view.name) is str for view in bundle.graph_views.values())
+    for access, key in zip(accesses, partition.source_graph_fingerprints):
+        assert type(access.view_name) is (string_type if location == "access" else str)
+        assert type(key) is (string_type if location == "binding" else str)
+    if location == "binding" and string_type is not _StringSubclass:
+        assert comparisons  # G1a validation itself sorts these keys.
+    comparisons.clear()
+    monkeypatch.setattr(_RaisingString, "armed", True)
+    before_bundle = deepcopy(asdict(bundle))
+    before_parties = deepcopy([asdict(party) for party in parties])
+    before_accesses = [asdict(access) for access in accesses]
+    before_metadata = deepcopy(partition.metadata)
+    original_bindings = tuple(partition.source_graph_fingerprints.items())
+    original_party_access = partition.party_access
+    original_metadata = partition.metadata
+
+    with pytest.raises(TypeError, match="plain built-in strings"):
+        resolve_party_graph_views(bundle, partition, parties, party_id=7)
+
+    assert comparisons == []
+    np.testing.assert_equal(asdict(bundle), before_bundle)
+    np.testing.assert_equal([asdict(party) for party in parties], before_parties)
+    assert [asdict(access) for access in accesses] == before_accesses
+    assert partition.party_access is original_party_access
+    assert partition.party_access[owner] is accesses
+    assert partition.metadata is original_metadata and partition.metadata == before_metadata
+    for (key, value), (original_key, original_value) in zip(
+        partition.source_graph_fingerprints.items(), original_bindings,
+    ):
+        assert key is original_key and value is original_value
+    assert comparisons == []
+
+
+@pytest.mark.parametrize("empty", [False, True])
+def test_delivery_assignment_names_builtin_nonlexical_input_stays_lexical(bundle, empty):
+    names = ("zeta", "alpha")
+    bundle.graph_views = {name: _graph(name=name) for name in names}
+    accesses = tuple(_access([] if empty else None, [] if empty else None, name) for name in names)
+    partition = GraphPartition(
+        name="builtin-names", party_access={7: accesses},
+        source_graph_fingerprints={
+            name: graph_view_fingerprint(bundle.graph_views[name]) for name in names
+        },
+        source_domain_fingerprint=graph_domain_fingerprint(bundle), metadata={},
+    )
+    parties = (_party(7, names),)
+    validate_graph_partition(partition, bundle, parties)
+    assert tuple(partition.source_graph_fingerprints) == names
+    assert tuple(access.view_name for access in partition.party_access[7]) == names
+    result = resolve_party_graph_views(bundle, partition, parties, party_id=7)
+    assert list(result) == ["alpha", "zeta"]
+    for access in accesses:
+        source = bundle.graph_views[access.view_name]
+        _assert_projection(result[access.view_name], _reference_projection(source, access), source, access)
+
+
 class _ArraySubclass(np.ndarray):
     pass
 

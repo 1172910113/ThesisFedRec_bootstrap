@@ -217,6 +217,22 @@ def validate_graph_partition(
                     )
 
 
+def _validate_graph_delivery_names(partition: GraphPartition) -> None:
+    # Run before G1a validation: it sorts binding keys, and local projection
+    # sorts access names. Neither may invoke a str subclass comparator.
+    if not isinstance(partition, GraphPartition):
+        raise TypeError("partition must be a GraphPartition")
+    for name in partition.source_graph_fingerprints:
+        if type(name) is not str:
+            raise TypeError("graph delivery binding names must be plain built-in strings")
+    for accesses in partition.party_access.values():
+        for access in accesses:
+            if not isinstance(access, GraphAccess):
+                raise TypeError("graph access entries must be GraphAccess objects")
+            if type(access.view_name) is not str:
+                raise TypeError("graph delivery access names must be plain built-in strings")
+
+
 def _validate_graph_delivery(view: GraphView) -> None:
     # G1a has already checked current plain-array structure and source binding.
     # Apply delivery restrictions even to empty or other parties' selections.
@@ -290,6 +306,7 @@ def resolve_party_graph_views(
     per requested graph and complete non-None user/item mapping outputs.
     """
     _validate_graph_party_id(party_id)
+    _validate_graph_delivery_names(partition)
     validate_graph_partition(partition, bundle, parties)
     if not any(party.party_id == party_id for party in parties):
         raise ValueError(f"unknown requested party_id {party_id}")
