@@ -866,7 +866,7 @@ access mechanisms must enforce source/protocol restrictions: validation/test
 interactions must not enter a training graph unless an explicitly approved
 experiment protocol permits and records this.
 
-Deferred beyond G1b: edge weights, node features and feature names, builders,
+Deferred beyond G2: edge weights, node features and feature names, builders,
 scenario generation, persistence, and training integration. A future
 PKGRec-compatible builder may require `item_to_node`; the canonical contract
 does not require it universally. PKGRec propagation, relation learning, and
@@ -1031,9 +1031,9 @@ bytes. Expected hashes are not obtained from production hash functions:
 | `synthetic` / `1.0` domain: users `[10, "10"]`, items `["a", "b", 20]` | `6a63805491e8c59cf975d58c8edbf9a4c5d54287aabb16693d6985b3c2e661ec` |
 | Party 7 selecting nodes `[0,1,2]`, edges `[0,3]`; party 41 with no views; above source bindings | `cc1267584294164217f843d1adb4ccba8dd57b762a1a2734b015003937a73e85` |
 
-These functions recompute identities on each call; no reusable index, fast
-cache, runtime snapshot, or persistence is introduced. Graph checks scan current
-nodes/edges/mappings; domain checks scan user/item maps, not interaction or split
+These G1a functions recompute identities on each call; they introduce no reusable
+index, fast cache, runtime snapshot or persistence (G2 is separate below).
+Graph checks scan current nodes/edges/mappings; domain checks scan user/item maps, not interaction or split
 arrays. Hashing can allocate canonical byte buffers and JSON payloads, so this
 is not a constant-memory or full-Books scalability claim. Sources and roster
 must remain stable during validation and subsequent use: no locks or concurrent
@@ -1126,11 +1126,123 @@ concurrent-write guarantee, privacy protocol, or proof of leakage-free sources.
 This strict path recomputes graph/domain identities and validates the whole
 partition on each call, scanning bound graph arrays and processed ID maps.
 Hashing retains its canonical-byte/JSON allocation cost. Projection materializes
-only the requested party's views but allocates a temporary source-node-sized
-canonical-to-local lookup per view, selected node/edge outputs, and full-length
-non-None user/item mappings plus remapping workspace. It is neither constant-
-memory nor O(batch) delivery. G2's indexed fast path, runtime handles, persistence,
-builders, scenarios, graph learning, and training integration remain deferred.
+only the requested party's views. Its shared projection calculation now builds
+per-view node/anchor indexes on each strict call, then allocates selected
+node/edge outputs and full-length non-None user/item mappings plus remapping
+workspace. It is neither constant-memory nor O(batch) delivery. G2 below reuses
+these indexes within a prepared handle; persistence, builders, scenarios, graph
+learning, and training integration remain deferred.
+
+### 11.4 G2: trusted prepared graph runtime
+
+Implemented in `src/data/graph_runtime.py` and exported through `src.data`:
+
+```python
+prepare_graph_runtime(
+    bundle: DatasetBundle, partition: GraphPartition, parties: Sequence[PartyData],
+    *, source_id: str, split_id: str, recipe_id: str,
+) -> GraphRuntime
+
+check_graph_runtime_binding(runtime: GraphRuntime, *, binding_id: str) -> None
+
+project_party_graphs(
+    runtime: GraphRuntime, *, party_id: int, binding_id: str,
+) -> dict[str, GraphView]
+
+close_graph_runtime(runtime: GraphRuntime) -> None
+```
+
+`GraphRuntime` is an opaque trusted-coordinator handle created by preparation,
+not a method input, persistent artifact or replacement canonical contract.
+Its only public data property, `binding_id: str`, is read-only. Keep the runtime,
+its identity and all canonical indexes on the trusted side. Pass only detached
+local GraphViews to methods. Private Python attributes are not a supported
+access API or a hostile-Python security boundary.
+
+**Preparation and ownership.** Inputs must remain stable throughout preparation
+by caller coordination or an actual external lock. There is no atomic-copy or
+concurrent-writer guarantee. Preparation first applies the strict G1b name,
+whole-partition, roster, domain, content and endpoint checks to the original
+objects, including rejection of ndarray/string subclasses and dtype metadata
+under the existing delivery rules. Copying cannot sanitize an unsupported
+source into acceptance. It then copies only referenced graph arrays and required
+tuples, reconstructs owned immutable access descriptors, and revalidates copied
+content fingerprints, structural constraints, complete namespace lengths and
+endpoints before returning a usable handle. A failed preparation publishes none.
+
+Graph arrays/index arrays have independently owned immutable bytes backing;
+their headers and private GraphViews are not exposed. Access arrays retain G1a's
+immutable bytes/fresh-header representation. Private view/index/access mappings
+are read-only. The roster snapshot consists only of validated party IDs and
+their matched canonical view names; no PartyData is retained. Only verified
+domain identity/cardinalities are needed during preparation, not a retained
+copy of the user/item raw-ID maps. The handle retains the resulting binding,
+owned views, shared indexes and per-party descriptors. No input DatasetBundle,
+mutable map, metadata, sample arrays, feature payload or unrelated graph view
+is retained. Immutable built-in scalar strings/integers may be shared safely.
+
+**Binding.** `binding_id` is SHA-256 of canonical sorted-key JSON with format
+`thesisfedrec.graph_runtime`, version `1`, delivery rules `strict_g1b_v1`,
+verified graph fingerprints, domain fingerprint, unchanged G1a partition
+checksum, the validated roster (numeric party order, lexical view order), and
+the explicitly supplied `source_id`, `split_id`, `recipe_id`. These context
+arguments must be nonblank exact built-in strings. They are trusted-caller
+assertions, not independently verified source/split/recipe provenance. Runtime
+preparation does not read interactions/splits or infer authoritative context
+from metadata. Source content, domains and permissions are verified against
+existing G1a bindings; metadata and scenario names remain excluded. Context or
+roster changes alter the binding even if the projected numbers are identical.
+
+Every projection requires the coordinator's **expected** binding ID, checked
+along with liveness and exact built-in nonnegative party ID. An unknown party
+or mismatched binding fails before delivery, including for an empty result.
+`check_graph_runtime_binding` exposes the same trusted-local equality check
+without projection. The coordinator may record the ID at preparation for later
+checks; blindly supplying a handle's current ID is not a check against changed
+experiment intent. This check does not consult mutable originals, authenticate
+caller assertions, detect later revocation, or implement checkpoint/resume.
+
+**Projection.** Shared per-view node and reverse-anchor indexes and lexical
+per-party descriptor lookup are prepared once. `None=all` stays unexpanded per
+party; no eager party payloads, full per-party mapping cache, dense adjacency or
+client-by-catalogue bitmap is built. The same pure projection calculation is
+used by strict G1b and G2. G1b still validates globally and builds indexes on each
+call. G2 only checks its handle/binding/party and visits that party's requested
+views. It performs no whole-source hash, roster/partition validation, unrelated
+party/view scan or source-sized index rebuild during delivery. Selected output
+GraphView structure is still validated.
+
+Sorted selected node IDs are remapped with binary search. Per-view reverse
+indexes store processed-anchor positions grouped by canonical node, with
+node-segment offsets. Partial access visits only selected segments, preserving
+many-to-one mappings. Full access directly copies the canonical anchor vectors.
+All Section 11.3 output semantics are unchanged: lexical view order, canonical
+selection order, `n0` local labels, complete vocabularies, no induced edges,
+None/empty/absence distinctions, full-length anchor vectors, owned writable
+plain int64 outputs and fresh empty metadata. Repeated/cross-party output
+mutation, including shape, dtype and flags, cannot affect the handle or others.
+
+**Costs and lifecycle.** Preparation scans/copies all referenced graph data and
+validates/hashes originals and owned snapshots; domain hashing also scans the
+processed maps. It needs canonical hash/JSON workspace and sorting workspace
+for reverse-anchor indexes. Retained array/index buffers scale with referenced
+nodes, edges, non-None mapping lengths and mapped anchors; explicit descriptor
+storage scales with explicit selections, not expanded `None` selectors. Numeric
+arrays do not account for raw-ID/vocabulary tuples, Python objects or temporary
+peak allocations. Each delivery still allocates full non-None processed mapping
+outputs, plus selected graph arrays and selected-anchor remapping workspace.
+No constant-memory, O(batch), Books-scale or training-performance claim follows.
+
+Later source, domain, roster or permission changes do not modify a prepared
+handle. New intent/data requires new preparation and explicit retirement of the
+old handle. Close is idempotent, releases all owned runtime references and makes
+binding-property reads, binding checks and projection fail clearly. Detached
+outputs remain valid after close. Coordinate preparation, delivery and close;
+concurrent lifecycle changes are not synchronized. This adds neither automatic
+revocation nor cryptographic privacy or held-out-leakage proof. Schema `1.0`,
+canonical graph/feature APIs, G1a hashes, sample ownership, splits, sampling,
+evaluation, and the frozen FedGMF/HFL path remain unchanged. G3 execution
+integration, persistence and graph builders remain outside this unit.
 
 ---
 
@@ -1349,7 +1461,8 @@ bundle-context validation, exports, and base-cache rejection of graph payloads.
 G1a adds separate immutable graph access/partition descriptors, content/domain
 fingerprints, an assignment checksum, and strict whole-partition validation
 (Sections 11.1-11.2). G1b adds only strict detached party-local projection
-(Section 11.3). Graph builders, indexed delivery, and persistence remain future work.
+(Section 11.3). G2 adds only the trusted owned runtime and indexed delivery
+(Section 11.4). Graph builders, persistence and execution integration remain future work.
 `ContinualView`, VFL, HyFL, and the complete derived-cache layout remain
 documented interfaces only.
 
@@ -1365,6 +1478,7 @@ src/data/
 ├── contracts.py
 ├── features.py
 ├── graph.py             # G1a identities/validation; G1b strict local projection
+├── graph_runtime.py     # G2 owned snapshot and indexed local delivery
 ├── feature_scenarios.py  # first Phase 4B3 unit
 ├── ml1m_features.py      # standalone item-genres builder
 ├── preprocess.py
@@ -1384,7 +1498,9 @@ Responsibilities:
   no scenario generation or persistence;
 - `graph.py`: ordered canonical graph/domain fingerprints, bound graph-partition
   checksum, strict roster/source/endpoint validation, and detached local graph
-  projection; no builders, reusable runtime index, or persistence;
+  projection and shared private projection/index helpers; no builders or persistence;
+- `graph_runtime.py`: trusted preparation, explicit identity binding, indexed
+  party delivery and close; no execution integration or persistence;
 - `feature_scenarios.py`: complete access and seeded single-view absence over
   existing canonical views, shallow party-summary copies, and assignment counts;
 - `ml1m_features.py`: strict ML1M movies metadata parsing and standalone

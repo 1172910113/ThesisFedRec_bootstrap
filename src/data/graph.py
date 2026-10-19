@@ -3,6 +3,7 @@
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -178,22 +179,33 @@ def validate_graph_partition(
                 f"access for party_id {party_id}"
             )
 
-    if graph_domain_fingerprint(bundle) != partition.source_domain_fingerprint:
+    _validate_graph_sources(
+        partition, bundle.graph_views, graph_domain_fingerprint(bundle),
+        len(bundle.user_id_map), len(bundle.item_id_map),
+    )
+
+
+def _validate_graph_sources(
+    partition: GraphPartition, graph_views: dict[str, GraphView],
+    domain_fingerprint: str, user_count: int, item_count: int,
+) -> None:
+    """Shared source/selection checks, also applied to G2's owned snapshot."""
+    if domain_fingerprint != partition.source_domain_fingerprint:
         raise ValueError("stale source_domain_fingerprint")
-    if not isinstance(bundle.graph_views, dict):
+    if not isinstance(graph_views, dict):
         raise TypeError("graph_views must be a dictionary")
     for name, expected in sorted(partition.source_graph_fingerprints.items()):
-        if name not in bundle.graph_views:
+        if name not in graph_views:
             raise ValueError(f"GraphPartition references unknown GraphView {name!r}")
-        view = bundle.graph_views[name]
+        view = graph_views[name]
         if not isinstance(view, GraphView):
             raise TypeError("referenced graph_views must be GraphView objects")
         if name != view.name:
             raise ValueError("graph_views keys must match their GraphView names")
         actual = graph_view_fingerprint(view)  # Revalidates current source structure.
         for field_name, size in (
-            ("user_to_node", len(bundle.user_id_map)),
-            ("item_to_node", len(bundle.item_id_map)),
+            ("user_to_node", user_count),
+            ("item_to_node", item_count),
         ):
             mapping = getattr(view, field_name)
             if mapping is not None and len(mapping) != size:
@@ -203,7 +215,7 @@ def validate_graph_partition(
 
     for accesses in partition.party_access.values():
         for access in accesses:
-            view = bundle.graph_views[access.view_name]
+            view = graph_views[access.view_name]
             nodes, edges = access.node_ids, access.edge_ids
             if nodes is not None and nodes.size and nodes[-1] >= len(view.node_raw_ids):
                 raise ValueError(f"GraphAccess {access.view_name!r} has out-of-range nodes")
@@ -248,39 +260,95 @@ def _validate_graph_delivery(view: GraphView) -> None:
             raise TypeError(f"GraphView {view.name!r} {field_name} has unsupported dtype metadata")
 
 
+@dataclass(frozen=True, slots=True)
+class _GraphMappingIndex:
+    offsets: np.ndarray
+    positions: np.ndarray
+
+
+@dataclass(frozen=True, slots=True)
+class _GraphProjectionIndex:
+    all_nodes: np.ndarray
+    users: _GraphMappingIndex | None
+    items: _GraphMappingIndex | None
+
+
+def _immutable_int_array(array: np.ndarray) -> np.ndarray:
+    """Private header, independently owned immutable backing bytes."""
+    return np.frombuffer(array.tobytes(order="C"), dtype=np.int64).reshape(array.shape)
+
+
+def _build_graph_mapping_index(
+    mapping: np.ndarray | None, node_count: int,
+) -> _GraphMappingIndex | None:
+    if mapping is None:
+        return None
+    positions = np.flatnonzero(mapping >= 0)
+    positions = positions[np.argsort(mapping[positions], kind="stable")]
+    counts = np.bincount(mapping[positions], minlength=node_count)
+    offsets = np.empty(node_count + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+    return _GraphMappingIndex(
+        _immutable_int_array(offsets), _immutable_int_array(positions),
+    )
+
+
+def _build_graph_projection_index(view: GraphView) -> _GraphProjectionIndex:
+    size = len(view.node_raw_ids)
+    return _GraphProjectionIndex(
+        _immutable_int_array(np.arange(size, dtype=np.int64)),
+        _build_graph_mapping_index(view.user_to_node, size),
+        _build_graph_mapping_index(view.item_to_node, size),
+    )
+
+
 def _project_graph_mapping(
-    mapping: np.ndarray | None, local_ids: np.ndarray,
+    mapping: np.ndarray | None, nodes: np.ndarray | None,
+    index: _GraphMappingIndex | None,
 ) -> np.ndarray | None:
     if mapping is None:
         return None
+    if nodes is None:
+        return np.array(mapping, dtype=np.int64, copy=True)
     projected = np.full(mapping.shape, -1, dtype=np.int64)
-    mapped = mapping >= 0
-    projected[mapped] = local_ids[mapping[mapped]]
+    # CSR-style node -> processed-anchor index. Only selected node segments
+    # are visited; complete output namespace allocation remains unavoidable.
+    starts = index.offsets[nodes]
+    counts = index.offsets[nodes + 1] - starts
+    local_ids = np.repeat(np.arange(len(nodes), dtype=np.int64), counts)
+    segment_bases = np.cumsum(counts) - counts
+    positions = np.repeat(starts - segment_bases, counts) + np.arange(
+        len(local_ids), dtype=np.int64,
+    )
+    projected[index.positions[positions]] = local_ids
     return projected
 
 
-def _project_graph_view(view: GraphView, access: GraphAccess) -> GraphView:
+def _project_graph_view(
+    view: GraphView, access: GraphAccess, index: _GraphProjectionIndex | None = None,
+) -> GraphView:
+    if index is None:
+        index = _build_graph_projection_index(view)
     nodes, edges = access.node_ids, access.edge_ids
-    if nodes is None:
-        nodes = np.arange(len(view.node_raw_ids), dtype=np.int64)
+    selected_nodes = index.all_nodes if nodes is None else nodes
     edge_selection = slice(None) if edges is None else edges
-    # Temporary canonical-to-local lookup, never exposed or retained. All
-    # selected endpoints have already been authorized by strict validation.
-    local_ids = np.full(len(view.node_raw_ids), -1, dtype=np.int64)
-    local_ids[nodes] = np.arange(len(nodes), dtype=np.int64)
+    endpoints = view.edge_index[:, edge_selection]
+    # Sorted canonical selections make remapping selection-sized, without a
+    # fresh source-sized canonical-to-local lookup on each delivery.
+    local_endpoints = endpoints if nodes is None else np.searchsorted(nodes, endpoints)
     return GraphView(
         name=view.name,
-        node_raw_ids=tuple(f"n{index}" for index in range(len(nodes))),
-        node_type_ids=np.array(view.node_type_ids[nodes], dtype=np.int64, copy=True),
+        node_raw_ids=tuple(f"n{position}" for position in range(len(selected_nodes))),
+        node_type_ids=np.array(view.node_type_ids[selected_nodes], dtype=np.int64, copy=True),
         node_type_names=tuple(name for name in view.node_type_names),
         edge_index=np.array(
-            local_ids[view.edge_index[:, edge_selection]], dtype=np.int64, copy=True,
-            order="C",
+            local_endpoints, dtype=np.int64, copy=True, order="C",
         ),
         relation_ids=np.array(view.relation_ids[edge_selection], dtype=np.int64, copy=True),
         relation_names=tuple(name for name in view.relation_names),
-        user_to_node=_project_graph_mapping(view.user_to_node, local_ids),
-        item_to_node=_project_graph_mapping(view.item_to_node, local_ids),
+        user_to_node=_project_graph_mapping(view.user_to_node, nodes, index.users),
+        item_to_node=_project_graph_mapping(view.item_to_node, nodes, index.items),
         metadata={},
     )
 
@@ -302,8 +370,8 @@ def resolve_party_graph_views(
 
     Sources/roster must stay stable during the call. No cache, atomic snapshot,
     concurrent-write guarantee, or training integration is provided. Validation
-    scans all bound sources/domains; projection additionally allocates a lookup
-    per requested graph and complete non-None user/item mapping outputs.
+    scans all bound sources/domains; projection additionally builds indexes
+    per requested graph and allocates complete non-None user/item mapping outputs.
     """
     _validate_graph_party_id(party_id)
     _validate_graph_delivery_names(partition)

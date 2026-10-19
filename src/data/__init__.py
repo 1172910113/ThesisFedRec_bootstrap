@@ -33,6 +33,13 @@ from src.data.graph import (
     resolve_party_graph_views,
     validate_graph_partition,
 )
+from src.data.graph_runtime import (
+    GraphRuntime,
+    check_graph_runtime_binding,
+    close_graph_runtime,
+    prepare_graph_runtime,
+    project_party_graphs,
+)
 from src.data.loaders import (
     load_ml1m_ratings,
     resolve_data_path,
@@ -51,6 +58,7 @@ __all__ = [
     "FeatureView",
     "GraphAccess",
     "GraphPartition",
+    "GraphRuntime",
     "GraphView",
     "InteractionSplits",
     "InteractionTable",
@@ -60,6 +68,8 @@ __all__ = [
     "build_hfl_partition",
     "build_ml1m_item_genre_view",
     "build_single_view_absence_scenario",
+    "check_graph_runtime_binding",
+    "close_graph_runtime",
     "feature_partition_checksum",
     "graph_domain_fingerprint",
     "graph_partition_checksum",
@@ -70,6 +80,8 @@ __all__ = [
     "preprocess_amazon_books",
     "preprocess_ml1m",
     "preprocess_ml1m_from_root",
+    "prepare_graph_runtime",
+    "project_party_graphs",
     "resolve_data_path",
     "resolve_data_root",
     "resolve_party_feature_views",

@@ -66,7 +66,8 @@ The relevant existing data seams are deliberately incomplete:
 - `PartyData.feature_view_names` and `graph_view_names` remain coarse visible-
   view summaries; Phase 4B2 adds separate feature row/field access, while
   G1a adds bound graph node/edge access descriptors and strict validation,
-  and G1b adds strict detached party-local graph delivery;
+  G1b adds strict detached party-local graph delivery, and G2 adds trusted
+  snapshot preparation and indexed delivery without runner integration;
 - the base cache serializes only interactions, splits, and mappings under
   schema `1.0`;
 - the Phase 3 runner is explicitly FedGMF/HFL and initializes one run from
@@ -595,14 +596,68 @@ cryptographic privacy guarantee is introduced. This does not certify semantic
 joins or absence of held-out interaction leakage in a source graph.
 
 The strict path scans all bound sources and processed domains on every call.
-In addition to G1a's hashing allocations it needs a temporary source-node-sized
-lookup per projected view, selected arrays, and complete non-None user/item
+In addition to G1a's hashing allocations it builds node/anchor indexes
+per projected view, selected arrays, and complete non-None user/item
 mapping outputs/remapping workspace. It projects only the requested party;
 it is not constant-memory or O(batch). No eager all-party projections, dense
 item-by-item adjacency, persistent cache, graph builder, model, or training
-integration is added. G2/G3 remain separately scoped. Synthetic acceptance
-uses an independent Python reference projector and explicit mutation/isolation
+integration is added. G2 below adds a prepared path; G3 remains deferred.
+Synthetic acceptance uses an independent Python reference projector and explicit mutation/isolation
 checks; it is not evidence of recommendation quality or full-data scalability.
+
+### 5.4 G2 owned graph runtime and indexed delivery
+
+`src/data/graph_runtime.py` implements only the trusted in-memory preparation
+and delivery lifecycle. Public operations exported via `src.data` are:
+
+```python
+prepare_graph_runtime(bundle, partition, parties, *, source_id, split_id, recipe_id)
+    -> GraphRuntime
+check_graph_runtime_binding(runtime, *, binding_id) -> None
+project_party_graphs(runtime, *, party_id, binding_id) -> dict[str, GraphView]
+close_graph_runtime(runtime) -> None
+```
+
+The coordinator supplies explicit nonblank source/split/recipe identities and
+keeps inputs stable throughout preparation (coordination or an external lock).
+Those identities are assertions, not proof of source lineage, split safety or
+recipe execution. Preparation applies all strict delivery restrictions before
+copying; validates owned referenced graph payloads and reconstructed immutable
+access descriptors; and builds shared per-view reverse-anchor indexes and a
+per-party lookup once. It retains no caller DatasetBundle, PartyData, mutable
+maps/metadata, sample/feature arrays or unrelated views. Private arrays use
+owned immutable backing bytes. Only the trusted coordinator owns this handle;
+methods receive detached local GraphViews, not runtime internals or bindings.
+
+The read-only `runtime.binding_id` binds verified content/domain/partition
+identities, validated roster, delivery-rules version and caller context. Each
+projection requires an expected binding, rejects mismatched reuse and unknown
+parties, and touches only the requested party's relevant views. It does not
+rehash sources, globally validate the roster/partition or rebuild source-sized
+indexes. Strict G1b remains a separately available fully validating path; both
+use the same projection calculation and produce identical detached values.
+`None` is not expanded per party. Full processed-domain mapping outputs still
+cost their full allocation; preparation owns full referenced graph/index
+buffers and has hashing/sorting workspace. This is not O(batch) or a Books-scale
+memory/performance claim. Detailed binding, ownership and cost rules are in
+`DATA_CONTRACT.md` Section 11.4.
+
+Source/roster/permission edits cannot change an existing snapshot. Re-prepare
+for new intent and explicitly close the old handle: no automatic revocation is
+promised. Close is idempotent, releases owned references and rejects subsequent
+binding/delivery operations without invalidating earlier detached outputs.
+Preparation/delivery/close require caller lifecycle coordination, not a claimed
+atomic/concurrent snapshot protocol. Private attributes are not a supported
+API or a security boundary. Local node labels and bindings do not prove privacy,
+semantic joins or absence of held-out leakage.
+
+Acceptance uses independent Python expected projections plus strict-G1b
+differential comparisons, source/output/header mutation isolation, lifecycle
+and binding errors, and instrumentation proving repeated delivery adds no
+global hash/validation/index-build work. Bounded synthetic resource evidence
+reports buffer bytes separately from unmeasured Python-object/peak memory.
+No runner integration, persistence, builder, new graph scenario recipe, method,
+training, G3 or FL-BASE is included; cache schema `1.0` remains unchanged.
 
 ## 6. Block 2.1: ParameterUpdatePolicy
 
@@ -1072,7 +1127,8 @@ or feature contracts, resolve local payloads, generate scenarios, persist
 graphs, or integrate training. Feature row/field recipes and persistence are
 not prerequisites. The separately scoped G1b unit adds only the strict detached
 projection in Section 5.3, preserving canonical/access contracts, fingerprints,
-cache behavior and the frozen training path. Indexed delivery, graph builders,
+cache behavior and the frozen training path. G2 (Section 5.4) adds only owned
+runtime preparation and indexed delivery. Execution integration, graph builders,
 and research methods require separate review.
 
 - Likely files: `src/data/contracts.py`, `src/data/graph.py`,
