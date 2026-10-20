@@ -24,3 +24,14 @@ __all__ = [
     "detached_operator_snapshot", "freeze_source_snapshot", "prepare_receiver",
     "receiver_tokens", "receiver_logits", "receiver_loss",
 ]
+
+from .public_basis import (
+    PublicBasis,
+    PublicBasisRecord,
+    build_public_basis,
+    validate_public_basis,
+)
+
+__all__ += [
+    "PublicBasis", "PublicBasisRecord", "build_public_basis", "validate_public_basis",
+]
