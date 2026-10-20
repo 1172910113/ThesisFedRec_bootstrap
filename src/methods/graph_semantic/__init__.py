@@ -35,3 +35,13 @@ from .public_basis import (
 __all__ += [
     "PublicBasis", "PublicBasisRecord", "build_public_basis", "validate_public_basis",
 ]
+
+from .graph_adapter import (
+    GraphOperatorSchema,
+    GraphRelationRule,
+    prepare_path_factors_from_graph,
+)
+
+__all__ += [
+    "GraphRelationRule", "GraphOperatorSchema", "prepare_path_factors_from_graph",
+]
