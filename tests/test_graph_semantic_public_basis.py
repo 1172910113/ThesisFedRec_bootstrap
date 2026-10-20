@@ -595,3 +595,62 @@ def test_bounded_resource_observation(monkeypatch):
         "delivered_frobenius_orthogonality_error": error,
         "limits": "shape trace covers selected NumPy calls; source inspection covers matmul/astype sites; tracemalloc excludes untracked native/BLAS/PyTorch allocations; inventory components need not peak together; no per-party copy/coordinator/network claim; p=n output is allowed; not resource qualification",
     }, sort_keys=True))
+
+
+# Fixed complete Cc ranges, independent of the production Unicode predicate.
+_P2_CC_CHARACTERS = tuple(chr(code) for code in (*range(0x20), *range(0x7F, 0xA0)))
+_P2_IDENTITY_FIELDS = ("public_embedding_id", "catalogue_id")
+
+
+@pytest.mark.parametrize("field", _P2_IDENTITY_FIELDS)
+@pytest.mark.parametrize("control", _P2_CC_CHARACTERS, ids=lambda ch: f"U+{ord(ch):04X}")
+def test_p2_builder_rejects_embedded_unicode_cc(field, control):
+    # Printable neighbours prevent blank/outer-whitespace rules explaining rejection.
+    with pytest.raises(ValueError, match=rf"^{field} must be a nonblank identity"):
+        _build(torch.eye(3), **{field: "left" + control + "right"})
+
+
+@pytest.mark.parametrize("field", _P2_IDENTITY_FIELDS)
+@pytest.mark.parametrize("control", _P2_CC_CHARACTERS, ids=lambda ch: f"U+{ord(ch):04X}")
+@pytest.mark.parametrize("boundary", ["caller_and_record", "record_only"])
+def test_p2_validator_rejects_embedded_unicode_cc(field, control, boundary):
+    e = torch.eye(3)
+    valid = _build(e)
+    # Construct an invalid record independently of invalid builder acceptance.
+    # Its documented canonical binding matches expected_binding_id exactly.
+    malformed = _rebind(valid, **{field: "left" + control + "right"})
+    overrides = {field: getattr(valid.record, field)} if boundary == "record_only" else {}
+    # In record_only, caller IDs are valid: this must reach record text checks.
+    # The field-specific error excludes ordinary binding/identity mismatch errors.
+    with pytest.raises(ValueError, match=rf"^{field} must be a nonblank identity"):
+        _validate(malformed, e, **overrides)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("policy", POLICIES)
+@pytest.mark.parametrize("field", _P2_IDENTITY_FIELDS)
+@pytest.mark.parametrize("identity", [
+    "public-name/v1", "公共目录/一", "Κατάλογος/α", "left\u200bright",
+    "left\u0378right", "left\ue000right", "left\u2028right",
+], ids=["ASCII", "Chinese", "Greek", "Cf", "Cn", "Co", "Zl"])
+def test_p2_non_cc_identity_exact_round_trip(tmp_path, identity, field, policy, dtype):
+    e = torch.tensor([[2., 0], [0, 1], [0, 1]], dtype=dtype)
+    result = _build(e, policy=policy, **{field: identity})
+    _validate(result, e)
+    assert getattr(result.record, field) == identity
+    payload = result.basis.numpy().astype("<f4").tobytes(order="C")
+    record_bytes = _canonical(asdict(result.record))
+    payload_file, record_file = tmp_path / "basis.f32le", tmp_path / "record.json"
+    payload_file.write_bytes(payload)
+    record_file.write_bytes(record_bytes)
+    data = json.loads(record_file.read_bytes())
+    data["environment"] = tuple(tuple(pair) for pair in data["environment"])
+    for name in ("selected_pivots", "coordinate_fallback"):
+        data[name] = tuple(data[name])
+    record = PublicBasisRecord(**data)
+    basis = torch.from_numpy(np.frombuffer(payload_file.read_bytes(), dtype="<f4").copy()).reshape(record.n, record.p)
+    restored = PublicBasis(basis, record)
+    _validate(restored, e, expected_binding_id=result.record.binding_id)
+    assert getattr(restored.record, field) == identity
+    assert _canonical(asdict(restored.record)) == record_bytes
+    assert restored.basis.numpy().astype("<f4").tobytes(order="C") == payload

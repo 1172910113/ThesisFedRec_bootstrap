@@ -10,6 +10,7 @@ import json
 import math
 import platform
 import sys
+import unicodedata
 
 import numpy as np
 import torch
@@ -73,7 +74,7 @@ def _binding(record: PublicBasisRecord) -> str:
 def _text(value: str, name: str) -> None:
     if (
         type(value) is not str or not value or value.strip() != value
-        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        or any(unicodedata.category(char) == "Cc" for char in value)
     ):
         raise ValueError(f"{name} must be a nonblank identity without outer whitespace/controls")
     try:
