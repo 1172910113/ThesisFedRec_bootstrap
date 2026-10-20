@@ -633,3 +633,91 @@ def test_bounded_compact_preparation_resource_and_call_observation(monkeypatch):
     for forbidden in ("DatasetBundle", "GraphPartition", "graph_runtime", ".to_dense(", "from src.methods.doi4", "np.eye("):
         assert forbidden not in text
     print("ADAPTER_RESOURCE_OBSERVATION=" + json.dumps({"catalogue": n, "mapped_local_items": m, "local_nodes": m+q, "stored_edges": edges.shape[1], "deduplicated_incidence": 512, "relation_aux_columns": q, "dtype": "float32", "delivered_mapping_bytes": mapping.nbytes, "deduplicated_numpy_incidence_bytes": 512*3*8, "retained_factor_numeric_bytes": sum(buffers.values()), "retained_tensor_shapes": {field.name: list(value.shape) for field in fields(paths) if isinstance(value := getattr(paths, field.name), torch.Tensor)}, "observed_torch_shapes": sorted(trace.shapes, key=lambda shape:(len(shape),shape)), "largest_observed_torch_tensor_bytes": trace.max_bytes, "tracemalloc_peak_bytes": peak, "process_peak_rss_kib_including_imports_and_prior_tests": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, "local_validation_calls": len(validations), "factory_calls": len(factory_inputs), "global_calls": global_calls, "limits": "O(n) mapping read and local structure validation; per-rule edge scans, sorting/dedup workspace and compact coordinate arrays; Torch trace misses NumPy/native workspace, tracemalloc misses untracked native/BLAS/PyTorch work; no graph-square matrix found by exercised shape trace and source inspection; no constant-memory/performance/learning qualification"}, sort_keys=True))
+
+
+# PW3-C-P2-int64-r1: canonical labels use the accepted CPU long incidence.
+_CANONICAL_CONTEXTS = ("None", "zero_nodes", "zero_edges", "mapped_isolates", "selected_edges", "rule_absent_locally")
+
+
+def _canonical_boundary_case(context, canonical):
+    other = 1 if canonical == 0 else 0
+    schema = _schema(relation_rules=(
+        _rule(0, canonical), _rule(1, canonical, "aux_to_item"),
+        _rule(2, other), _rule(4, canonical),
+    ))
+    if context == "None":
+        return None, schema
+    view = _view()
+    if context in ("zero_nodes", "zero_edges"):
+        view = replace(
+            view, node_raw_ids=() if context == "zero_nodes" else ("aux",),
+            node_type_ids=_ids() if context == "zero_nodes" else _ids([1]),
+            edge_index=np.empty((2, 0), dtype=np.int64), relation_ids=_ids(),
+            item_to_node=np.full(8, -1, dtype=np.int64), user_to_node=_ids(),
+        )
+    elif context == "mapped_isolates":
+        view = replace(view, edge_index=np.empty((2, 0), dtype=np.int64), relation_ids=_ids())
+    elif context == "rule_absent_locally":
+        keep = np.isin(view.relation_ids, [2, 3])
+        view = replace(view, edge_index=view.edge_index[:, keep], relation_ids=view.relation_ids[keep])
+    return view, schema
+
+
+@pytest.mark.parametrize("dtype", DTYPES)
+@pytest.mark.parametrize("context", _CANONICAL_CONTEXTS)
+@pytest.mark.parametrize("canonical", [0, 2**40, 2**63 - 2, 2**63 - 1])
+def test_p2_canonical_range_supported_labels(dtype, context, canonical, monkeypatch):
+    view, schema = _canonical_boundary_case(context, canonical)
+    original, calls = graph_adapter.prepare_path_factors, []
+    def factory(ids, triples, **kwargs):
+        calls.append(triples.clone())
+        return original(ids, triples, **kwargs)
+    monkeypatch.setattr(graph_adapter, "prepare_path_factors", factory)
+    paths = _adapt(view, dtype, schema)
+    assert len(calls) == 1 and calls[0].dtype == torch.long
+    labels = set(calls[0][:, 1].tolist())
+    other = 1 if canonical == 0 else 0
+    expected = {canonical, other} if context == "selected_edges" else {other} if context == "rule_absent_locally" else set()
+    assert labels == expected  # exact labels, without wrapping/remapping
+    assert paths.local_item_ids.tolist() == ([] if context in ("None", "zero_nodes", "zero_edges") else list(PUBLIC_IDS))
+    assert paths.weights.numel() == (6 if context == "selected_edges" else 2 if context == "rule_absent_locally" else 0)
+    assert paths.structurally_valid == (context in ("selected_edges", "rule_absent_locally"))
+
+
+@pytest.mark.parametrize("canonical", [2**63, 2**63 + 1, 2**200])
+def test_p2_canonical_range_declaration_rejects_overflow(canonical):
+    with pytest.raises(ValueError, match="canonical_relation_id.*range"):
+        _rule(0, canonical)
+
+
+@pytest.mark.parametrize("canonical", [2**63, 2**63 + 1, 2**200])
+def test_p2_canonical_range_schema_rejects_overflow(canonical):
+    rules = _schema().relation_rules
+    object.__setattr__(rules[0], "canonical_relation_id", canonical)
+    with pytest.raises(ValueError, match="canonical_relation_id.*range"):
+        _schema(relation_rules=rules)
+
+
+@pytest.mark.parametrize("context", _CANONICAL_CONTEXTS)
+@pytest.mark.parametrize("canonical", [2**63, 2**63 + 1, 2**200])
+def test_p2_canonical_range_revalidation_precedes_graph_work(context, canonical, monkeypatch):
+    view, schema = _canonical_boundary_case(context, 0)
+    # Test-owned corruption exercises factory revalidation of frozen declarations.
+    object.__setattr__(schema.relation_rules[0], "canonical_relation_id", canonical)
+    def forbidden(*args, **kwargs):
+        raise AssertionError("canonical range validation must precede graph work/conversion/factory")
+    monkeypatch.setattr(GraphView, "validate", forbidden)
+    for name in ("_validate_local_view", "_canonical_incidence", "prepare_path_factors"):
+        monkeypatch.setattr(graph_adapter, name, forbidden)
+    monkeypatch.setattr(torch, "from_numpy", forbidden)
+    with pytest.raises(ValueError, match="canonical_relation_id.*range"):
+        _adapt(view, schema=schema)
+
+
+@pytest.mark.parametrize("canonical,error", [
+    (-1, ValueError), (True, TypeError), (False, TypeError), (1.0, TypeError),
+    (np.int64(1), TypeError), (np.uint64(1), TypeError), (_Integer(1), TypeError),
+])
+def test_p2_canonical_range_preserves_exact_integer_policy(canonical, error):
+    with pytest.raises(error, match="canonical_relation_id"):
+        _rule(0, canonical)

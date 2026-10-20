@@ -51,7 +51,7 @@ def _validate_rule(rule: GraphRelationRule) -> None:
     if type(rule) is not GraphRelationRule:
         raise TypeError("relation_rules must contain exact GraphRelationRule records")
     _id(rule.relation_id, "relation_id")
-    _id(rule.canonical_relation_id, "canonical_relation_id")
+    _id(rule.canonical_relation_id, "canonical_relation_id", 2**63)
     if type(rule.direction) is not str or rule.direction not in ("item_to_aux", "aux_to_item"):
         raise ValueError("direction must be item_to_aux or aux_to_item")
 

@@ -454,3 +454,20 @@ full gate remains a later combined-candidate task. No ML1M/Books graph is built,
 no graph-wide semantic alignment or basis distribution is added, and collection,
 optimizer/stage/message versions/accounting, privacy and full U4/M2 remain
 separately authorized work.
+
+### PW3-C-P2-int64-r1: explicit canonical-label representation bound
+
+The corrective contract adds an upper bound that the original task's
+"nonnegative" wording did not state: `canonical_relation_id` must be an exact
+built-in integer satisfying `0 <= canonical_relation_id <= 2**63 - 1`. Boolean, NumPy scalar,
+integer-subclass and floating substitutes remain invalid. This bound matches
+the existing CPU `torch.long` incidence representation; a canonical ID is an
+exact label, never an array dimension or an invitation to remap/wrap/clip it.
+
+Rule construction, schema construction and preparation revalidation apply the
+same range check before inspecting any graph, converting coordinates or calling
+the existing factory, including None, empty/isolate inputs and rules with no
+local edge. Supported labels keep their exact values and all accepted path,
+source and sketch computations remain unchanged. Boundary regressions include
+zero, 2**40, both largest int64 labels, and overflowing exact integers; external
+corrective evidence compares the original and corrected valid-input outputs.
