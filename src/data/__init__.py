@@ -21,6 +21,13 @@ from src.data.feature_scenarios import (
     build_complete_feature_scenario,
     build_single_view_absence_scenario,
 )
+from src.data.feature_runtime import (
+    FeatureRuntime,
+    check_feature_runtime_binding,
+    close_feature_runtime,
+    prepare_feature_runtime,
+    project_party_features,
+)
 from src.data.features import (
     feature_partition_checksum,
     resolve_party_feature_views,
@@ -55,6 +62,7 @@ __all__ = [
     "DatasetBundle",
     "FeatureAccess",
     "FeaturePartition",
+    "FeatureRuntime",
     "FeatureView",
     "GraphAccess",
     "GraphPartition",
@@ -69,6 +77,8 @@ __all__ = [
     "build_ml1m_item_genre_view",
     "build_single_view_absence_scenario",
     "check_graph_runtime_binding",
+    "check_feature_runtime_binding",
+    "close_feature_runtime",
     "close_graph_runtime",
     "feature_partition_checksum",
     "graph_domain_fingerprint",
@@ -81,6 +91,8 @@ __all__ = [
     "preprocess_ml1m",
     "preprocess_ml1m_from_root",
     "prepare_graph_runtime",
+    "prepare_feature_runtime",
+    "project_party_features",
     "project_party_graphs",
     "resolve_data_path",
     "resolve_data_root",
