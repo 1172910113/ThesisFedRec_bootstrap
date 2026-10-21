@@ -128,3 +128,78 @@ Run it alongside unchanged `tests/test_doi4_compatible_readout.py` and
 TMPDIR/pytest basetemp directories. The default full suite remains a separate
 gate. Numerical F correctness does not establish learned compatibility,
 recommendation improvement, a joint training engine or U4 completion.
+
+## Local recommendation and positive-group loss: PW3-B
+
+`local_recommendation_logits` and `positive_group_bce` are exported through
+`src.methods.doi4` and defined in `recommendation.py`. This separate numerical
+slice adds the local K4 recommendation path around accepted T/F. Earlier
+slice descriptions remain historical boundaries; their implementations and
+tests are unchanged. No scientific formula or experiment protocol changes.
+
+The score API takes eight caller-owned floating tensors and two keyword-only
+Boolean availability masks:
+
+| Argument | Shape |
+|---|---|
+| `user_embeddings`, `item_embeddings` | `[E,d]` |
+| `fused_features`, `private_features` | `[E,h]`, `[E,g]` |
+| `w_fused`, `w_private` | `[d,h]`, `[d,g]` |
+| `score_weight`, `score_bias` | `[d]`, scalar `[]` |
+| `fused_available`, `private_available` | `[E]` |
+
+Unavailable feature rows are zeroed **before** projection. With these masked
+features z/q, the formula is:
+
+```text
+v_tilde = item_embeddings + z @ w_fused.T + q @ w_private.T
+logits = sum(user_embeddings * v_tilde * score_weight, dim=1) + score_bias
+```
+
+The result is raw logits `[E]`, with no sigmoid. With both branches absent it
+reduces mathematically to the public GMF score; tests compare matched public
+state/IDs. Masked feature gradients are zero and residual maps keep connected
+zero paths. E=0 is an empty connected result. Private pooling/encoding and
+source routing are caller dependencies, not choices made by this API.
+
+`positive_group_bce(logits, labels, group_offsets)` returns a scalar. Logits
+and labels are `[N]` of one floating dtype, with exact binary labels. Dense
+CPU int64 offsets `[M+1]`, M>=1, start at 0, end at N and strictly increase.
+Each nonempty group explicitly packs one positive first and then zero or
+more negatives. The function neither samples nor reorders. It computes
+stable BCE-with-logits, averages within each group, then gives groups equal
+weight. Unequal group lengths therefore differ from a labeled-example mean.
+One group and groups with no negatives are valid; empty losses are errors.
+Labels/offsets are data and have no label-gradient contract. The logits path
+is differentiable. The public executor must apply `m_c,t/N_r` **once outside**
+this kernel; no client/source weights or active-client renormalization are
+invented here. Existing FedGMF mean-BCE training semantics are unchanged.
+
+Both APIs accept only dense strided CPU float32 or float64 tensors with one
+floating dtype and finite values, including masked entries. Score d/h/g must
+be positive. Non-contiguous/non-leaf caller inputs are supported without
+coercion, clone/detach, mutation, hidden parameters, initialization or RNG.
+CPU autocast is locally disabled to preserve dtype. Types/layouts/ranks/
+shapes/devices, masks and group structure are checked explicitly. Nonfinite
+arithmetic at projections, residuals, products, score reductions or loss
+reductions raises `ValueError`, with no clipping or promotion. Stable loss
+does not imply that every extreme finite reduction fits the input dtype.
+GPU/other dtypes and Python 3.10 have no new validation claim.
+
+Tests freeze fixtures/tolerances before execution: float64 central differences
+use step `1e-6`, atol `2e-7`, rtol `1e-6`; bounded float32 oracle comparisons
+use `1e-5`. Independent NumPy scores/stable logistic loss, unequal positive
+groups, public GMF equivalence and a test-owned unsplit T/F/score/loss graph
+check forward values and all caller gradients. The same item leaf enters the
+fusion query and direct score, including multiple receivers/private branches.
+Tests also cover absence/empty inputs, large finite masked perturbations,
+connected zeros, shared gradients, storage/versions/RNG and invalid inputs.
+
+This adds a numerical local recommendation path, not a learned feature
+encoder, real-data DOI4 model, scheduler, joint training protocol, U4
+completion or recommendation gain. Parameter/optimizer/message lifecycle,
+public scheduling and encoders remain separately scoped. No production reuse
+mechanism or dependency on PW3-A's new runtime is introduced. Run only the
+new recommendation tests plus unchanged readout, fusion and FedGMF regressions
+with external logs/JUnit and distinct fresh sibling TMPDIR/basetemp paths;
+full-suite and integration/review/publication gates remain later tasks.

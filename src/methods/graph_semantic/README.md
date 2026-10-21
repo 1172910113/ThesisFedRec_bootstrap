@@ -303,3 +303,171 @@ A future public coordinator must construct once, distribute authoritative B and
 record, and enforce catalogue/E/basis/T/bank identity and lifecycle. Coordinator,
 transport, cache, persistence, graph adaptation, training-stage integration,
 collection and privacy mechanisms remain outside this unit.
+
+## PW3 C: explicit authorized local GraphView adapter
+
+This unit adds a pure adapter from one caller-supplied, already-authorized
+local `GraphView` to the existing `PathFactors`. It implements the selected
+Topic 1.2 v12 §§15.3 and 18.2 direction/schema boundary. It does not alter the
+published path operator, U4-K0 kernels or corrected public-basis policy. The
+previous sections' deferred graph-adaptation statement is resolved only for
+this explicitly declared local schema; graph builders/alignment and public
+execution/message lifecycle remain separate work.
+
+Exactly three new package exports are added:
+
+```python
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GraphRelationRule:
+    relation_id: int
+    canonical_relation_id: int
+    direction: Literal["item_to_aux", "aux_to_item"]
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class GraphOperatorSchema:
+    node_type_names: tuple[str, ...]
+    relation_names: tuple[str, ...]
+    item_node_type_id: int
+    aux_node_type_ids: tuple[int, ...]
+    relation_rules: tuple[GraphRelationRule, ...]
+    ignored_relation_ids: tuple[int, ...]
+
+prepare_path_factors_from_graph(
+    view: GraphView | None,
+    schema: GraphOperatorSchema,
+    *,
+    num_items: int,
+    dtype: torch.dtype,
+) -> PathFactors
+```
+
+### Explicit declarations and local validation
+
+All declaration IDs/counts are exact built-in integers excluding Boolean,
+NumPy and integer-subclass substitutes. num_items is positive; model dtype is
+exactly torch.float32 or torch.float64. Vocabulary declarations are tuples of
+unique nonblank plain strings. Item and nonempty unique auxiliary type IDs
+must be in the node vocabulary and disjoint. Rule IDs and ignored IDs must be
+unique, in range, disjoint and together cover **every** declared relation,
+including unused entries. A rule's canonical ID is nonnegative; several rules
+may deliberately share one canonical relation. Its direction is explicit.
+Records validate at construction, and the factory revalidates all declarations
+even for None or zero-edge input. No defaults are inferred from names.
+
+A real input must be an exact local GraphView with ordinary plain NumPy int64
+arrays, without array subclasses, masks or dtype metadata. Supported ordinary
+strided/read-only arrays are not coerced. The adapter runs local
+`GraphView.validate()` once per preparation, and matches both vocabularies to
+the schema exactly in order/content. Local structure, including raw-ID rules,
+all endpoints/relations and explicit stored duplicates, remains subject to the
+existing GraphView contract. No structural defect is repaired or laundered.
+
+`item_to_node` is mandatory, with exact length num_items. -1 means unmapped;
+nonnegative targets must be injective and have the declared item node type.
+Every local node of that item type must have one public anchor, including
+isolated nodes. There is no implicit catalogue extension, metadata-only item
+support, raw-ID join or fallback to user_to_node. User mappings are validated
+as local GraphView structure but never become a second item anchor map.
+
+For each selected edge, item_to_aux requires item -> declared auxiliary type;
+aux_to_item requires the reverse storage orientation. Wrong selected endpoint
+types fail. Other node types/edge roles enter only through explicitly ignored
+relations (and may remain isolated). Ignored edges are excluded before degree
+calculation, while their underlying GraphView structure must still be legal.
+Metadata is ignored, never used to infer an inverse, exclusion or permission.
+
+The caller must supply only its authorized local projection and keep it
+stable throughout the call. Structural/schema validation does not authenticate
+provenance or prevent access by code holding an original global graph. The
+adapter accepts no DatasetBundle, GraphPartition, roster or runtime and makes
+no global graph fingerprint/validation/index-building calls.
+
+### Compact canonicalization and unchanged numerical semantics
+
+Mapped public IDs become sorted local rows and include mapped isolates. Each
+selected edge becomes `(local item row, canonical relation ID, local auxiliary
+node index)`. Canonical relation IDs are passed with their explicit values to
+the existing int64 incidence factory. Exact canonical duplicates are collapsed
+before invoking `prepare_path_factors`, so declared forward/inverse or alias
+storage copies count once. Different canonical relations keep separate columns
+even at the same auxiliary node. One call adapts one view; raw auxiliary names
+never align nodes between parties/views.
+
+None is explicit caller-supplied absence and produces zero local rows/triples
+with the requested public catalogue size/dtype. A schema-carrying zero-node
+view, an all-unmapped non-item graph, mapped isolates, singleton auxiliary
+columns and all-ignored relations preserve the accepted zero-action behavior.
+A valid structural graph can yield zero T under a chosen B; the existing
+structural validity predicate is retained, with no B/T norm test.
+
+Only the existing factory computes degrees/normalization/S/h and validity.
+It uses local deduplicated binary incidence, float64 coefficient construction
+followed by model-dtype computation. Existing Apply, two-hop diagonal removal,
+two ungated applications for four-hop with retained returns, source/sketch
+parameter gradients and receiver freeze rules remain unchanged. No dense R,
+adjacency, item-pair operator or selection matrix, extra inverse/self-loop,
+epsilon or additional normalization is constructed by this adapter.
+
+Preparation reads the delivered length-n mapping: this is explicitly O(n),
+not O(batch) or constant memory. Local GraphView validation also scans local
+structure. Per-rule edge scans, mapped-node sorting and canonical triple
+sorting/deduplication need local workspace. Numeric coordinate arrays scale
+with selected edges/support rather than catalogue pairs. Existing full-length
+input mapping storage belongs to the delivered GraphView, not a retained
+per-party adapter cache. Returned factors own detached numeric buffers; they
+retain no GraphView, input arrays, raw-ID tuple, schema record or metadata.
+Caller mutation after preparation cannot alter those factors. Tensor fields
+of PathFactors themselves remain mutable under its existing contract.
+
+### Evidence and limits
+
+`tests/test_graph_semantic_graph_adapter.py` declares public semantic triples
+independently of adapter outputs and builds tiny dense NumPy R/S/M/M² oracles.
+The fixed fixture includes explicit inverse/alias copies, two canonical
+relations sharing an auxiliary node, sparse public IDs and an isolated row.
+It compares Apply, source logits/BCE and sketch at float64 atol=1e-7 and
+float32 atol=1e-5. Permutation/raw-ID/forward-only controls, local deletion
+and relation-separation changes, strict declaration/mapping/type failures,
+absence/empty/zero-projection cases and input/RNG/ownership checks are covered.
+Dense graph matrices occur only in tiny test oracles.
+
+A test-owned composition prepares an existing GraphRuntime, projects two
+arbitrary party IDs with disjoint private edges/auxiliaries and shared public
+anchors, adapts each local view once, then uses accepted source/sketch/receiver
+functions. Global hash/validation/index helpers are guarded after runtime
+preparation; local GraphView.validate is counted only during adaptation and
+never per batch. The test owns runtime close; local factors remain usable.
+This is numerical composition, not a production stage/training executor.
+
+A bounded n=4096, mapped m=256, local auxiliary q=64 probe contains 1024 stored
+forward/inverse edges and 512 unique canonical incidences. It reports actual
+mapping/triple/factor buffer sizes, retained tensor shapes, Torch operation
+shapes, preparation/factory/global-call counts, tracemalloc and process RSS.
+Torch shape traces miss NumPy/native workspace; tracemalloc misses untracked
+native/PyTorch allocations; RSS includes imports/prior tests. Source inspection
+and the exercised shape trace cover absence of graph-square allocations, with
+no timing threshold or formal resource/learning qualification.
+
+Required focused regressions are the unchanged U4-K0, public-basis,
+graph-resolution, graph-runtime, graph-segment and FedGMF modules. The default
+full gate remains a later combined-candidate task. No ML1M/Books graph is built,
+no graph-wide semantic alignment or basis distribution is added, and collection,
+optimizer/stage/message versions/accounting, privacy and full U4/M2 remain
+separately authorized work.
+
+### PW3-C-P2-int64-r1: explicit canonical-label representation bound
+
+The corrective contract adds an upper bound that the original task's
+"nonnegative" wording did not state: `canonical_relation_id` must be an exact
+built-in integer satisfying `0 <= canonical_relation_id <= 2**63 - 1`. Boolean, NumPy scalar,
+integer-subclass and floating substitutes remain invalid. This bound matches
+the existing CPU `torch.long` incidence representation; a canonical ID is an
+exact label, never an array dimension or an invitation to remap/wrap/clip it.
+
+Rule construction, schema construction and preparation revalidation apply the
+same range check before inspecting any graph, converting coordinates or calling
+the existing factory, including None, empty/isolate inputs and rules with no
+local edge. Supported labels keep their exact values and all accepted path,
+source and sketch computations remain unchanged. Boundary regressions include
+zero, 2**40, both largest int64 labels, and overflowing exact integers; external
+corrective evidence compares the original and corrected valid-input outputs.
