@@ -471,3 +471,107 @@ local edge. Supported labels keep their exact values and all accepted path,
 source and sketch computations remain unchanged. Boundary regressions include
 zero, 2**40, both largest int64 labels, and overflowing exact integers; external
 corrective evidence compares the original and corrected valid-input outputs.
+
+## PW4 C: unprotected M-none contributions and K1 arithmetic
+
+Import this bounded unit directly from `src.methods.graph_semantic.mnone`;
+package exports and the accepted kernels remain unchanged. Its exact public API is:
+
+```python
+@dataclass(frozen=True, slots=True, kw_only=True)
+class UnprotectedMNoneContribution:
+    values: torch.Tensor
+    mass: torch.Tensor
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class K1Sums:
+    values: torch.Tensor
+    mass: torch.Tensor
+
+prepare_mnone_contribution(source: SourceKernel, final_a: torch.Tensor) -> UnprotectedMNoneContribution
+empty_k1_sums(*, p: int) -> K1Sums
+add_k1_contribution(sums: K1Sums, contribution: UnprotectedMNoneContribution) -> K1Sums
+finalize_k1_bank(sums: K1Sums) -> torch.Tensor
+```
+
+This local representation uses CPU float32 source/release values, float64 sums
+and mass, and a float32 bank, in channel order `[2,4]`. It neither casts shared
+source/B/receiver state nor changes the existing float64 analytical kernels.
+This encoding choice does not freeze a formal experimental profile.
+
+Both records require finite CPU dense strided contiguous detached tensors:
+values have shape `[2,p,p]`, mass is scalar. Contribution mass is exactly 0 or 1;
+sum mass is an exact nonnegative integer in `0..2**53-1`. Zero mass requires
+numerically zero values, while mass 1 permits a zero projected operator. The
+float64 count bound preserves consecutive integer representation; it is not a
+recommended donor budget. Construction validates original inputs, then copies
+both into independent owned detached buffers. Frozen dataclasses do not make
+public tensor storage immutable or provide a hostile-Python boundary. Every
+arithmetic operation revalidates the current records, including caller mutations.
+
+The source helper validates the prepared SourceKernel and its float32 finite
+public/local buffers, related shapes/index ranges and final_a `[2]` before any
+structural branch. Borrowed tensors and final_a may be ordinary strided inputs;
+final_a may require gradients or be nonleaf. It does not infer finality from
+gradient flags, prove provenance, change gradients/versions/RNG/ambient grad mode,
+clone full E/B/X, or inspect original graph/permission payloads. Full finite scans
+of supplied E/B and local buffers are explicit preparation costs, not O(batch).
+Source origin and dependency stability remain the caller's responsibility.
+
+Each valid helper invocation calls the existing `detached_operator_snapshot`
+once with the supplied final_a, even for empty/invalid structure, then checks the
+computed T before publication. It reuses the accepted two/four-hop and gate math.
+Only the existing `PathFactors.structurally_valid` flag determines mass: valid
+returns the newly computed final T and mass 1; invalid returns canonical zeros
+and mass 0. A structurally valid graph with zero B projection still has mass 1.
+Outputs are detached after generating T; no private P/a/D/Z, graph/runtime/hash,
+support mask/count/norm or message header is included. This is not source fitting,
+source-state freezing, collection or receiver preparation.
+
+`empty_k1_sums` checks exact built-in positive p and the Python-integer condition
+`2*p*p+1 <= 2**63-1` before allocation. It invents no catalogue parameter, p<=n
+rule or safe-memory limit; source/binding callers enforce their own catalogue
+compatibility. OOM/system exceptions are not converted to numerical conclusions,
+and large representable dimensions are not a tested resource capability.
+
+Addition validates both records/p, adds values and mass in float64, and returns
+new owned sums. Adding the same contribution twice counts it twice. Finalization
+uses float64 division when mass is positive, followed by one float32 cast; zero
+mass produces an independent float32 zero bank. Input buffers/versions stay
+unchanged on success or failure. There is no epsilon, clipping, extra
+normalization, forced symmetry/PSD, interaction/FedAvg weight, donor list or
+state outside arguments/results. Different accumulation orders are not promised
+bit-identical, and no cross-library reproducibility claim is added.
+
+Wrong object/tensor, dtype, device or layout raises TypeError. Bad rank, shape,
+contiguity, detached-record status, range, finiteness or mass consistency raises
+ValueError. Nonfinite computed T/sum/division/cast or addition beyond the count
+bound raises ArithmeticError. Direct construction/restoration with count above
+the bound raises ValueError. Invalid or zero-mass branches still validate inputs.
+
+New bounded tests independently construct NumPy R/S/M/M² and a dense final-T
+oracle, hand-check donor 7/31/73 sum/mean, and cover ownership/revalidation,
+source/gradient/RNG/grad-mode noninterference, exact count boundaries and failure
+semantics. Fixed tolerances are float32 atol=1e-6/rtol=1e-5 and bounded float64
+sum atol=1e-12. Only the new module and unchanged U4-kernel test module form this
+unit's focused run. No historical event/oracle/resource suite or full gate is
+rerun for this component. Tiny buffer observations are not scale benchmarks.
+
+A float32 source values+mass numeric payload is `4*(2*p*p+1)` bytes: 36 at p=2,
+2052 at p=16. The returned values-only bank is `8*p*p` bytes: 32/2048 respectively;
+it does not automatically carry mass. Numeric sums occupy `8*(2*p*p+1)` bytes.
+Transient conversion/addition buffers remain fixed in p, while source local F2/F4
+and shared public E/B retain their existing costs. No measured serialized or wire
+bytes exist; metadata, B setup, retries and receiver deliveries would be separate.
+
+M-none is an **unprotected diagnostic**: values and mass are visible, including
+structural validity. This module has no roster, donor/receiver/self policy,
+completeness, release identity, exactly-once/replay, codec/checksum, bank binding,
+journal/meter/outbox/resume, optimizer or trainer. Pure finalization cannot prove
+that a collection is complete or authorize a no-bank fallback. These remain
+public execution responsibilities; no public policy is selected here. Future
+U4P jointly protects values+mass, includes empty-graph noise behavior, and retries
+the same protected release bytes with actual metering. No clipping/noise/accountant,
+epsilon/delta or privacy guarantee is implemented. Minimal U4 is followed by the
+separate U4P/E-P0 gate before complex fusion/baseline expansion; full U4/M2,
+integration and publication are not established by this numerical unit.
