@@ -203,3 +203,80 @@ mechanism or dependency on PW3-A's new runtime is introduced. Run only the
 new recommendation tests plus unchanged readout, fusion and FedGMF regressions
 with external logs/JUnit and distinct fresh sibling TMPDIR/basetemp paths;
 full-suite and integration/review/publication gates remain later tasks.
+
+## Binary field encoding K0 (PW4 B)
+
+`encode_binary_field_units(local_field_ids, binary_values, valid_unit_mask,
+field_embeddings, value_embeddings)` is defined in
+`src.methods.doi4.binary_fields`; import directly from that module. This
+bounded component implements only the additive `F + V` numerical encoder
+for caller-provided legal local integer payloads. It does not implement the
+proposed public model-input adapter or a complete encoder/training pipeline.
+
+| Argument | Shape and supported type |
+|---|---|
+| `local_field_ids`, `binary_values` | `[E,P]`, dense strided CPU int64 |
+| `valid_unit_mask` | `[E,P]`, dense strided CPU Boolean |
+| `field_embeddings` | `[J,r]`, dense strided CPU float32/float64 |
+| `value_embeddings` | `[2,r]`, same floating dtype as the field table |
+
+E/P/J may be zero; r must be positive. All table values must be finite,
+including unused rows and when no units are valid. Binary codes must be 0
+or 1 at **all** positions. A field ID is either in `[0,J)` or explicit `-1`
+padding at a masked position; values below `-1` or at/above J always fail.
+With J=0, all positions must be masked with ID `-1`. These constraints are
+validated even for empty inputs. Type/dtype/device/layout errors raise
+`TypeError`; rank/shape/range/nonfinite errors raise `ValueError`.
+
+For valid cells only, `X[e,p] = F[local_field_ids[e,p]] + V[binary_values[e,p]]`.
+Masked outputs are exactly zero. Padding never indexes the last table row,
+and masked/unreferenced rows never undergo addition. Active addition overflow
+raises `ValueError`; nothing is clipped or promoted. The result is a new
+`[E,P,r]` tensor with no write-through alias to inputs/tables. Ordinary
+PyTorch tensors/Parameters, non-leaf expressions and non-contiguous tensors
+are supported; no inputs are cast, cloned, detached or mutated. CPU autocast
+is locally disabled to preserve table dtype; no forward RNG is consumed.
+
+Empty gathers keep autograd paths to both caller tables for E/P/J=0 and
+all-masked batches. Their gradients under a finite linear scalar loss are
+connected zeros; a full-table `sum()*0` is avoided because it can overflow
+on finite unused entries. Repeated IDs/values accumulate contributions.
+Known binary zero is an observed code; validity is determined by the mask,
+never by a code or embedding norm. Pass that **same original mask** to the
+accepted `compatible_readout`; this function returns neither a new mask nor
+availability. Encoded width r must match readout's local input width d
+(the third dimension of X); readout's compatible h may differ when its
+caller-provided `[h,r]` maps perform that projection. No default dimensions,
+seeds, initialization or parameter updates are chosen here.
+
+Whole-table finiteness checks cost `O((J+2)r)`, integer/mask checks `O(EP)`,
+and dense output allocation `O(EPr)`, in addition to `O(N_valid*r)` active
+gathers/addition. Complete-call work is not claimed to scale only with active
+units. CPU validation does not qualify GPU, other dtypes, Python 3.10,
+Books-scale behavior or production training performance.
+
+F/V are caller-owned party-local state, with no hidden registration,
+initialization, optimizer or implicit sharing by party/name/shape. The
+additive architecture has the same `V[1]-V[0]` shift for every field. It has
+less general field-value interaction capacity than a `[J,2,r]` table and
+provides no guarantee of lossless or semantically identifiable encoding.
+Future controls must use the same units/encoding/masks. Unit/slot differences
+and nonzero gradients establish numerical wiring only, not compatibility,
+complementary information, novelty or recommendation benefit.
+
+Opaque field-map creation/persistence/rename epochs, public whitelist and GT
+sidecar separation, raw binary adaptation, parameter/map persistence and
+migration remain separately scoped. No party ID, canonical name/schema,
+metadata, recipe/hash or GT sidecar is read here. Metadata `{}` alone is not
+GT isolation, and valid local IDs do not certify permissions/privacy. Do not
+rebuild identity from canonical column order or silently share F across
+parties. Private pooling/pri encoding is absent; public scheduling and `m/N`
+weighting stay outside this kernel/group loss as previously specified.
+
+Validation is scoped to `tests/test_doi4_binary_fields.py` and unchanged
+`tests/test_doi4_compatible_readout.py`: independent NumPy/scatter oracles,
+fixed-tolerance table finite differences, empty/padding/arithmetic boundaries,
+caller mutation/RNG/storage and permutation checks, and a few new readout
+composition cases. Prior T/F/score/full-suite and external L7/formula evidence
+is reused, not rerun. Full gate, integration and independent exact-commit
+review remain separate; this component does not complete U4/M2.
