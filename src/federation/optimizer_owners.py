@@ -10,7 +10,7 @@ import torch
 _MAX_VERSION = 2**63 - 1
 _MAX_STEP = 2**24 - 1
 _OwnerVersions = tuple[tuple[str, int], ...]
-_ParameterSteps = tuple[tuple[str, tuple[tuple[str, int, torch.dtype | None], ...]], ...]
+_ParameterSteps = tuple[tuple[str, str, int], ...]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -340,8 +340,8 @@ def apply_optimizer_gradients(
         receipt = OptimizerStepReceipt(
             generation_before=owners.generation, generation_after=owners.generation + 1,
             stepped_owner_ids=tuple(completed), owner_update_versions=_versions(owners),
-            parameter_steps=tuple((o, tuple((n, step, dtype) for n, (step, dtype)
-                                           in group.items())) for o, group in after.items()),
+            parameter_steps=tuple((o, n, step) for o, group in after.items()
+                                  for n, (step, _) in group.items()),
         )
     except BaseException as exc:
         if attempted:

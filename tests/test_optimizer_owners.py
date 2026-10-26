@@ -199,7 +199,7 @@ def test_profile_parameter_identity_canonical_order_and_no_constructor():
             setattr(owners, name, None)
 
 
-def test_frozen_keyword_only_exact_observation_fields_and_receipt_steps():
+def test_frozen_keyword_only_exact_observation_fields_and_receipt_steps(record_property):
     parameters = {"b": {"none": _parameter([1.0]), "used": _parameter([2.0])}}
     owners = _prepare(parameters)
     receipt = apply_optimizer_gradients(owners, {"b": {"used": torch.tensor([0.0], dtype=torch.float64), "none": None}}, expected_generation=0)
@@ -214,12 +214,57 @@ def test_frozen_keyword_only_exact_observation_fields_and_receipt_steps():
     assert type(receipt) is OptimizerStepReceipt
     assert type(snapshot) is OptimizerOwnersSnapshot
     actual_dtype = _state(owners, "b", parameters["b"]["used"])["step"].dtype
-    assert receipt.parameter_steps == (("b", (("none", 0, None), ("used", 1, actual_dtype))),)
+    assert actual_dtype in (torch.float32, torch.float64)
+    record_property("actual_adam_counter_dtype", str(actual_dtype))
+    assert receipt.parameter_steps == (("b", "none", 0), ("b", "used", 1))
     for field in ("parameters", "parameter_steps", "exp_avg", "exp_avg_sq"):
         assert type(getattr(snapshot, field)) is dict
         assert type(getattr(snapshot, field)["b"]) is dict
     signature = inspect.signature(prepare_optimizer_owners)
     assert all(signature.parameters[name].default is inspect.Parameter.empty for name in PROFILE)
+
+
+def test_receipt_flat_all_parameters_canonical_order_and_all_none_call(record_property):
+    parameters = {
+        "source": {"user": _parameter([1.0]), "encoder": _parameter([2.0])},
+        "shared": {"items": _parameter([3.0])},
+        "idle": {"weight": _parameter([4.0])},
+    }
+    owners = _prepare(parameters)
+    receipt = apply_optimizer_gradients(
+        owners,
+        {"source": {"user": None, "encoder": torch.tensor([0.25], dtype=torch.float64)},
+         "shared": {"items": None}, "idle": {"weight": None}},
+        expected_generation=0,
+    )
+    expected = (("idle", "weight", 0), ("shared", "items", 0),
+                ("source", "encoder", 1), ("source", "user", 0))
+    expected_snapshot = {"idle": {"weight": 0}, "shared": {"items": 0},
+                         "source": {"encoder": 1, "user": 0}}
+    assert receipt.stepped_owner_ids == ("source",)
+    assert receipt.owner_update_versions == (("idle", 0), ("shared", 0), ("source", 1))
+    before = snapshot_optimizer_owners(owners)
+    all_none = apply_optimizer_gradients(owners, _none_gradients(parameters), expected_generation=1)
+    after = snapshot_optimizer_owners(owners)
+    assert (receipt.generation_before, receipt.generation_after) == (0, 1)
+    assert (all_none.generation_before, all_none.generation_after) == (1, 2)
+    assert all_none.stepped_owner_ids == ()
+    assert all_none.owner_update_versions == receipt.owner_update_versions
+    for result in (receipt, all_none):
+        assert type(result.parameter_steps) is tuple
+        assert result.parameter_steps == expected
+        assert all(type(row) is tuple and len(row) == 3 for row in result.parameter_steps)
+        for owner_id, parameter_name, step in result.parameter_steps:
+            assert type(owner_id) is str and type(parameter_name) is str
+            assert type(step) is int
+    for snapshot in (before, after):
+        assert type(snapshot.parameter_steps) is dict
+        assert snapshot.parameter_steps == expected_snapshot
+        for group in snapshot.parameter_steps.values():
+            assert type(group) is dict
+            assert all(type(step) is int for step in group.values())
+    record_property("flat_receipt_parameter_steps", repr(receipt.parameter_steps))
+    record_property("snapshot_parameter_steps", repr(after.parameter_steps))
 
 
 def test_all_none_advances_only_generation_and_never_calls_step(monkeypatch):
@@ -592,7 +637,7 @@ def test_invalid_existing_adam_counter_rejected_without_updating(bad_step):
 
 
 @pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
-def test_exact_counter_cap_active_rejection_none_preservation_and_last_safe_step(dtype):
+def test_exact_counter_cap_active_rejection_none_preservation_and_last_safe_step(dtype, record_property):
     parameter = _parameter([1.0])
     owners = _prepare({"o": {"w": parameter}})
     gradients = {"o": {"w": torch.ones_like(parameter)}}
@@ -600,7 +645,9 @@ def test_exact_counter_cap_active_rejection_none_preservation_and_last_safe_step
     state = _state(owners, "o", parameter)
     state["step"] = torch.tensor(COUNTER_MAX - 1, dtype=dtype)
     receipt = apply_optimizer_gradients(owners, gradients, expected_generation=1)
-    assert receipt.parameter_steps == (("o", (("w", COUNTER_MAX, dtype),)),)
+    assert receipt.parameter_steps == (("o", "w", COUNTER_MAX),)
+    assert state["step"].dtype is dtype
+    record_property("actual_injected_adam_counter_dtype", str(state["step"].dtype))
     before = snapshot_optimizer_owners(owners)
     with pytest.raises(ValueError):
         apply_optimizer_gradients(owners, gradients, expected_generation=2)

@@ -155,11 +155,21 @@ parameter_steps
 `stepped_owner_ids` is a tuple of owners whose optimizer steps actually
 returned, in canonical order on success. `owner_update_versions` is a
 lexically ordered tuple of `(owner_id, int_version)` pairs. `parameter_steps`
-is an ordered tuple of
-`(owner_id, tuple((parameter_name, int_step, actual_counter_dtype), ...))`
-pairs. The dtype is the actual `torch.dtype`, or `None` for uninitialized
-state; its accompanying step is an exact built-in integer. This reports
-counter dtype without pretending the underlying state is an integer tensor.
+is a flat tuple of `(owner_id, parameter_name, int_step)` triples, sorted by
+owner and parameter name. Every registered parameter is included, even for
+an owner that did not step; uninitialized state is reported as integer zero.
+Each row is an exact tuple of two exact built-in strings and one exact
+built-in integer. For example:
+
+```python
+(("shared", "items", 1), ("source", "encoder", 1), ("source", "user", 0))
+```
+
+Callers can directly unpack `for owner_id, parameter_name, step in
+receipt.parameter_steps`. No dtype or `None` is included in these rows.
+Actual internal Adam counter dtypes are recorded in acceptance evidence,
+not added to either public record; the floating-counter rules above remain
+unchanged. An all-None call advances generation but leaves these steps intact.
 Receipt containers are immutable and hold no parameter or moment tensors.
 A receipt is not a persistent transaction journal.
 
