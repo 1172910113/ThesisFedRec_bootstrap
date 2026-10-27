@@ -713,3 +713,474 @@ def test_wrappers_preserve_raw_unit_and_packed_token_values_storage_and_versions
     for tensor, (value, pointer, version) in zip(packed_inputs, before_receiver):
         assert torch.equal(tensor.detach(), value)
         assert tensor.data_ptr() == pointer and tensor._version == version
+
+
+# Small seam fixture, fixed before execution. These tolerances cover round-off
+# when the same accepted CPU kernels are connected through independent graphs;
+# this adds no formula oracle or scientific initialization policy.
+LOCAL_REPLY_FIXTURE_TEXT = r'''
+{
+  "fixture_id": "POST-PW8-local-reply-v1",
+  "dimensions": {"E": 4, "d": 2, "h": 3, "L": 3},
+  "tolerances": {"float64_atol": 1e-12, "float64_rtol": 1e-12, "float32_atol": 1e-5, "float32_rtol": 1e-5},
+  "item_indices": [0, 1, 0, 2],
+  "mask": [[true, true, false], [true, false, true], [false, true, true], [true, true, true]],
+  "labels": [1.0, 0.0, 0.0, 1.0],
+  "group_offsets": [0, 3, 4],
+  "floats": {
+    "tokens": [[[0.2, -0.6, 0.8], [0.7, 0.1, -0.4], [-0.3, 0.9, 0.5]], [[-0.5, 0.4, 0.2], [0.8, -0.7, 0.3], [0.1, 0.6, -0.9]], [[0.6, -0.2, 0.4], [-0.8, 0.3, 0.7], [0.9, 0.5, -0.1]], [[-0.4, 0.8, 0.6], [0.3, -0.5, 0.9], [0.7, 0.2, -0.6]]],
+    "user_embeddings": [[0.7, -0.6], [0.4, 0.9], [-0.8, 0.5], [0.3, -0.7]],
+    "item_table": [[0.6, -0.7], [-0.5, 0.8], [0.9, 0.3]],
+    "w_query": [[0.7, -0.4], [-0.3, 0.8], [0.5, 0.6]],
+    "w_key": [[0.8, -0.3, 0.2], [0.1, 0.7, -0.4], [-0.5, 0.2, 0.9]],
+    "w_value": [[0.4, 0.6, -0.2], [-0.7, 0.3, 0.8], [0.5, -0.4, 0.7]],
+    "w_output": [[0.9, 0.2, -0.3], [-0.4, 0.8, 0.1], [0.3, -0.6, 0.7]],
+    "w_fused": [[0.6, -0.4, 0.8], [-0.5, 0.7, 0.3]],
+    "score_weight": [0.8, -0.9],
+    "score_bias": 0.12
+  },
+  "external_fused": [[0.2, -0.4, 0.7], [0.8, 0.3, -0.5], [-0.6, 0.9, 0.1], [0.4, -0.7, 0.2]],
+  "availability": [true, false, true, false]
+}
+'''
+LOCAL_REPLY_FIXTURE = json.loads(LOCAL_REPLY_FIXTURE_TEXT)
+
+
+def _local_reply_tensors(dtype=torch.float64):
+    return {name: torch.tensor(value, dtype=dtype, requires_grad=True)
+            for name, value in LOCAL_REPLY_FIXTURE["floats"].items()}
+
+
+def _local_reply_kwargs(tensors):
+    return {
+        "user_embeddings": tensors["user_embeddings"],
+        "item_embeddings": tensors["item_table"][LOCAL_REPLY_FIXTURE["item_indices"]],
+        "w_fused": tensors["w_fused"],
+        "score_weight": tensors["score_weight"],
+        "score_bias": tensors["score_bias"],
+    }
+
+
+def _local_reply_fusion(tensors):
+    return center_fusion(
+        tensors["tokens"], torch.tensor(LOCAL_REPLY_FIXTURE["mask"]),
+        _local_reply_kwargs(tensors)["item_embeddings"], tensors["w_query"],
+        tensors["w_key"], tensors["w_value"], tensors["w_output"],
+    )
+
+
+def _local_reply_loss(tensors, fused=None, available=None):
+    labels = torch.tensor(LOCAL_REPLY_FIXTURE["labels"], dtype=tensors["tokens"].dtype)
+    offsets = torch.tensor(LOCAL_REPLY_FIXTURE["group_offsets"])
+    if fused is None:
+        return composition.fuse_score_group_loss_pri_none(
+            tensors["tokens"], torch.tensor(LOCAL_REPLY_FIXTURE["mask"]), labels, offsets,
+            **_local_reply_kwargs(tensors),
+            **{name: tensors[name] for name in ("w_query", "w_key", "w_value", "w_output")},
+        )
+    return composition.group_loss_pri_none_from_fused(
+        fused, available, labels, offsets, **_local_reply_kwargs(tensors),
+    )
+
+
+def _local_reply_inputs(dtype=torch.float64):
+    tensors = _local_reply_tensors(dtype)
+    fused = torch.tensor(LOCAL_REPLY_FIXTURE["external_fused"], dtype=dtype, requires_grad=True)
+    return fused, torch.tensor(LOCAL_REPLY_FIXTURE["availability"]), _local_reply_kwargs(tensors)
+
+
+def _local_reply_tolerance(dtype):
+    name = str(dtype).split(".")[-1]
+    return {key: LOCAL_REPLY_FIXTURE["tolerances"][f"{name}_{key}"] for key in ("atol", "rtol")}
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_local_reply_connected_equivalence_all_floating_gradients(dtype, record_property):
+    combined_inputs, split_inputs = _local_reply_tensors(dtype), _local_reply_tensors(dtype)
+    combined = _local_reply_loss(combined_inputs)
+    fused, available, _ = _local_reply_fusion(split_inputs)
+    split = _local_reply_loss(split_inputs, fused, available)
+    assert type(split) is tuple and len(split) == 2
+    tolerance = _local_reply_tolerance(dtype)
+    for actual, expected in zip(split, combined[:2]):
+        torch.testing.assert_close(actual, expected, **tolerance)
+    combined_gradients = torch.autograd.grad(combined[0], tuple(combined_inputs.values()))
+    split_gradients = torch.autograd.grad(split[0], tuple(split_inputs.values()))
+    for actual, expected in zip(split_gradients, combined_gradients):
+        torch.testing.assert_close(actual, expected, **tolerance)
+    assert split_inputs["tokens"].shape[2] != split_inputs["item_table"].shape[1]
+    assert torch.equal(_local_reply_kwargs(split_inputs)["item_embeddings"][0],
+                       _local_reply_kwargs(split_inputs)["item_embeddings"][2])
+    assert torch.count_nonzero(split_gradients[3]) > 0
+    assert torch.count_nonzero(split_gradients[4]) > 0
+    record_property("local_reply_maximum_forward_error", max(
+        float((actual - expected).abs().max()) for actual, expected in zip(split, combined[:2])))
+    record_property("local_reply_maximum_gradient_error", max(
+        float((actual - expected).abs().max())
+        for actual, expected in zip(split_gradients, combined_gradients)))
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_local_reply_z_gradient_boundary_and_item_paths(dtype, record_property):
+    connected_inputs, boundary_inputs = _local_reply_tensors(dtype), _local_reply_tensors(dtype)
+    connected = _local_reply_loss(connected_inputs)
+    connected_gz, connected_items = torch.autograd.grad(
+        connected[0], (connected[2], connected_inputs["item_table"]))
+    fused, available, _ = _local_reply_fusion(boundary_inputs)
+    # The caller creates this separate leaf only to model the z/g_z boundary.
+    received_fused = fused.detach().requires_grad_()
+    loss, logits = _local_reply_loss(boundary_inputs, received_fused, available)
+    gz, direct_items = torch.autograd.grad(loss, (received_fused, boundary_inputs["item_table"]))
+    query_items = torch.autograd.grad(fused, boundary_inputs["item_table"], grad_outputs=gz)[0]
+    tolerance = _local_reply_tolerance(dtype)
+    torch.testing.assert_close(logits, connected[1], **tolerance)
+    torch.testing.assert_close(loss, connected[0], **tolerance)
+    torch.testing.assert_close(gz, connected_gz, **tolerance)
+    torch.testing.assert_close(direct_items + query_items, connected_items, **tolerance)
+    assert torch.count_nonzero(direct_items) > 0 and torch.count_nonzero(query_items) > 0
+    record_property("local_reply_item_gradient_merge_error",
+                    float((direct_items + query_items - connected_items).abs().max()))
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_local_reply_empty_score_connected_zeros_and_empty_loss_rejection(dtype):
+    fused, available, kwargs = _local_reply_inputs(dtype)
+    fused, available = fused[:0], available[:0]
+    kwargs["user_embeddings"] = kwargs["user_embeddings"][:0]
+    kwargs["item_embeddings"] = kwargs["item_embeddings"][:0]
+    logits = composition.score_pri_none_from_fused(fused, available, **kwargs)
+    assert logits.shape == (0,) and logits.dtype == dtype
+    for gradient in torch.autograd.grad(logits.sum(), (fused, *kwargs.values())):
+        assert gradient is not None and torch.count_nonzero(gradient) == 0
+    with pytest.raises(ValueError):
+        composition.group_loss_pri_none_from_fused(
+            fused, available, torch.empty(0, dtype=dtype), torch.tensor([0]), **kwargs)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+@pytest.mark.parametrize("case", ["mixed", "all_false", "true_zero"])
+def test_local_reply_availability_is_explicit_and_zero_gradients_remain_connected(dtype, case):
+    fused, available, kwargs = _local_reply_inputs(dtype)
+    if case == "all_false":
+        available = torch.zeros(4, dtype=torch.bool)
+    elif case == "true_zero":
+        fused = torch.zeros((4, 3), dtype=dtype, requires_grad=True)
+        available = torch.ones(4, dtype=torch.bool)
+    logits = composition.score_pri_none_from_fused(fused, available, **kwargs)
+    expected = local_recommendation_logits(
+        kwargs["user_embeddings"], kwargs["item_embeddings"], fused,
+        torch.zeros((4, 2), dtype=dtype), kwargs["w_fused"], torch.zeros((2, 2), dtype=dtype),
+        kwargs["score_weight"], kwargs["score_bias"], fused_available=available,
+        private_available=torch.zeros(4, dtype=torch.bool))
+    torch.testing.assert_close(logits, expected, atol=0, rtol=0)
+    gz, projection_gradient = torch.autograd.grad(logits.sum(), (fused, kwargs["w_fused"]))
+    assert gz is not None and projection_gradient is not None
+    assert torch.count_nonzero(gz[~available]) == 0
+    if case == "all_false":
+        assert torch.count_nonzero(gz) == torch.count_nonzero(projection_gradient) == 0
+    elif case == "true_zero":
+        assert torch.count_nonzero(gz) > 0 and torch.count_nonzero(projection_gradient) == 0
+    else:
+        assert torch.count_nonzero(gz[available]) > 0
+
+
+def _local_reply_invalid_inputs(case):
+    fused, available, kwargs = _local_reply_inputs()
+    if case == "fused_object":
+        fused = [[0.0]]
+    elif case == "fused_sparse":
+        fused = torch.sparse_coo_tensor(torch.tensor([[0], [0]]), torch.tensor([1.0]), (4, 3))
+    elif case == "fused_nested":
+        fused = torch.nested.nested_tensor([torch.tensor([1.0]), torch.tensor([2.0, 3.0])])
+    elif case == "fused_device":
+        fused = torch.empty((4, 3), dtype=torch.float64, device="meta")
+    elif case == "fused_rank":
+        fused = fused.flatten()
+    elif case == "fused_dtype":
+        fused = fused.to(torch.int64)
+    elif case == "fused_half":
+        fused = fused.to(torch.float16)
+    elif case == "fused_mismatch":
+        fused = fused.to(torch.float32)
+    elif case == "fused_shape":
+        fused = fused[:3]
+    elif case in ("fused_nan_masked", "fused_inf_masked"):
+        fused = fused.detach().clone()
+        fused[1, 0] = float("nan" if case == "fused_nan_masked" else "inf")
+    elif case == "mask_object":
+        available = [True] * 4
+    elif case == "mask_sparse":
+        available = torch.sparse_coo_tensor(torch.tensor([[0, 2]]), torch.tensor([True, True]), (4,))
+    elif case == "mask_nested":
+        available = torch.nested.nested_tensor([torch.tensor([True]), torch.tensor([False, True])])
+    elif case == "mask_device":
+        available = torch.empty(4, dtype=torch.bool, device="meta")
+    elif case == "mask_rank":
+        available = available[:, None]
+    elif case == "mask_dtype":
+        available = available.to(torch.int64)
+    elif case == "mask_shape":
+        available = available[:3]
+    elif case == "zero_d":
+        kwargs["user_embeddings"] = torch.empty((4, 0), dtype=torch.float64)
+        kwargs["item_embeddings"] = torch.empty((4, 0), dtype=torch.float64)
+        kwargs["w_fused"] = torch.empty((0, 3), dtype=torch.float64)
+        kwargs["score_weight"] = torch.empty(0, dtype=torch.float64)
+    elif case == "zero_h":
+        fused = torch.empty((4, 0), dtype=torch.float64)
+        kwargs["w_fused"] = torch.empty((2, 0), dtype=torch.float64)
+    elif case == "item_shape":
+        kwargs["item_embeddings"] = kwargs["item_embeddings"][:3]
+    elif case == "projection_shape":
+        kwargs["w_fused"] = kwargs["w_fused"][:, :2]
+    elif case == "weight_shape":
+        kwargs["score_weight"] = kwargs["score_weight"][:1]
+    elif case == "bias_rank":
+        kwargs["score_bias"] = kwargs["score_bias"][None]
+    elif case == "user_dtype":
+        kwargs["user_embeddings"] = kwargs["user_embeddings"].to(torch.int64)
+    else:
+        raise AssertionError(f"unknown fixed invalid case: {case}")
+    return fused, available, kwargs
+
+
+@pytest.mark.parametrize("case,error,field", [
+    ("fused_object", TypeError, "fused_features"),
+    ("fused_sparse", TypeError, "fused_features"),
+    ("fused_nested", TypeError, "fused_features"),
+    ("fused_device", ValueError, "fused_features"),
+    ("fused_rank", ValueError, "fused_features"),
+    ("fused_dtype", TypeError, "fused_features"),
+    ("fused_half", TypeError, "fused_features"),
+    ("fused_mismatch", TypeError, "dtype"),
+    ("fused_shape", ValueError, "fused_features"),
+    ("fused_nan_masked", ValueError, "fused_features"),
+    ("fused_inf_masked", ValueError, "fused_features"),
+    ("mask_object", TypeError, "fused_available"),
+    ("mask_sparse", TypeError, "fused_available"),
+    ("mask_nested", TypeError, "fused_available"),
+    ("mask_device", ValueError, "fused_available"),
+    ("mask_rank", ValueError, "fused_available"),
+    ("mask_dtype", TypeError, "fused_available"),
+    ("mask_shape", ValueError, "fused_available"),
+    ("zero_d", ValueError, "positive"), ("zero_h", ValueError, "positive"),
+    ("item_shape", ValueError, "item_embeddings"),
+    ("projection_shape", ValueError, "w_fused"),
+    ("weight_shape", ValueError, "score_weight"),
+    ("bias_rank", ValueError, "score_bias"), ("user_dtype", TypeError, "user_embeddings"),
+])
+def test_local_reply_invalid_external_inputs_precede_zero_allocation(case, error, field, monkeypatch):
+    fused, available, kwargs = _local_reply_invalid_inputs(case)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid input reached private placeholder allocation")
+
+    monkeypatch.setattr(torch.Tensor, "new_zeros", forbidden)
+    monkeypatch.setattr(torch, "zeros", forbidden)
+    with pytest.raises(error, match=field):
+        composition.score_pri_none_from_fused(fused, available, **kwargs)
+
+
+@pytest.mark.parametrize("case,error,field", [
+    ("rank_before_later_type", ValueError, "user_embeddings"),
+    ("all_ranks_before_dtype", ValueError, "score_bias"),
+    ("finite_before_later_dtype", ValueError, "user_embeddings"),
+    ("item_shape_before_fused", ValueError, "item_embeddings"),
+    ("fused_shape_before_projection", ValueError, "fused_features"),
+    ("projection_shape_before_weight", ValueError, "w_fused"),
+    ("weight_shape_before_mask", ValueError, "score_weight"),
+])
+def test_local_reply_validation_passes_have_fixed_priority(case, error, field, monkeypatch):
+    fused, available, kwargs = _local_reply_inputs()
+    if case == "rank_before_later_type":
+        kwargs["user_embeddings"], kwargs["item_embeddings"] = kwargs["user_embeddings"].flatten(), None
+    elif case == "all_ranks_before_dtype":
+        kwargs["user_embeddings"] = kwargs["user_embeddings"].to(torch.int64)
+        kwargs["score_bias"] = kwargs["score_bias"][None]
+    elif case == "finite_before_later_dtype":
+        kwargs["user_embeddings"] = torch.full((4, 2), float("nan"), dtype=torch.float64)
+        kwargs["item_embeddings"] = kwargs["item_embeddings"].to(torch.int64)
+    elif case == "item_shape_before_fused":
+        kwargs["item_embeddings"], fused = kwargs["item_embeddings"][:3], fused[:2]
+    elif case == "fused_shape_before_projection":
+        fused, kwargs["w_fused"] = fused[:3], kwargs["w_fused"][:, :2]
+    elif case == "projection_shape_before_weight":
+        kwargs["w_fused"], kwargs["score_weight"] = kwargs["w_fused"][:, :2], kwargs["score_weight"][:1]
+    elif case == "weight_shape_before_mask":
+        kwargs["score_weight"], available = kwargs["score_weight"][:1], None
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("invalid input reached private placeholder allocation")
+
+    monkeypatch.setattr(torch.Tensor, "new_zeros", forbidden)
+    monkeypatch.setattr(torch, "zeros", forbidden)
+    with pytest.raises(error, match=field):
+        composition.score_pri_none_from_fused(fused, available, **kwargs)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+def test_local_reply_finite_inputs_preserve_accepted_overflow_and_cpu_autocast(dtype):
+    fused, available, kwargs = _local_reply_inputs(dtype)
+    expected = composition.score_pri_none_from_fused(fused, available, **kwargs)
+    with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+        actual = composition.score_pri_none_from_fused(fused, available, **kwargs)
+    assert actual.dtype == dtype
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    kwargs["user_embeddings"] = torch.full((4, 2), torch.finfo(dtype).max, dtype=dtype)
+    kwargs["item_embeddings"] = torch.full((4, 2), torch.finfo(dtype).max, dtype=dtype)
+    with pytest.raises(ValueError):
+        composition.score_pri_none_from_fused(fused, available, **kwargs)
+
+
+@pytest.mark.parametrize("case,error", [
+    ("labels_object", TypeError), ("labels_rank", ValueError),
+    ("labels_dtype", TypeError), ("labels_mismatch", TypeError),
+    ("labels_nan", ValueError), ("labels_shape", ValueError),
+    ("labels_nonbinary", ValueError), ("labels_positive_order", ValueError),
+    ("labels_extra_positive", ValueError), ("offsets_object", TypeError),
+    ("offsets_dtype", TypeError), ("offsets_rank", ValueError),
+    ("offsets_start", ValueError), ("offsets_end", ValueError),
+    ("offsets_repeated", ValueError), ("offsets_zero_groups", ValueError),
+    ("offsets_device", ValueError),
+])
+def test_local_reply_group_loss_preserves_label_and_offset_rejections(case, error):
+    fused, available, kwargs = _local_reply_inputs()
+    labels = torch.tensor(LOCAL_REPLY_FIXTURE["labels"], dtype=torch.float64)
+    offsets = torch.tensor(LOCAL_REPLY_FIXTURE["group_offsets"])
+    if case == "labels_object":
+        labels = [1.0, 0.0, 0.0, 1.0]
+    elif case == "labels_rank":
+        labels = labels[:, None]
+    elif case == "labels_dtype":
+        labels = labels.to(torch.int64)
+    elif case == "labels_mismatch":
+        labels = labels.to(torch.float32)
+    elif case == "labels_nan":
+        labels[1] = float("nan")
+    elif case == "labels_shape":
+        labels = labels[:3]
+    elif case == "labels_nonbinary":
+        labels[1] = 0.5
+    elif case == "labels_positive_order":
+        labels = torch.tensor([0.0, 1.0, 0.0, 1.0], dtype=torch.float64)
+    elif case == "labels_extra_positive":
+        labels[1] = 1
+    elif case == "offsets_object":
+        offsets = [0, 3, 4]
+    elif case == "offsets_dtype":
+        offsets = offsets.to(torch.int32)
+    elif case == "offsets_rank":
+        offsets = offsets[:, None]
+    elif case == "offsets_start":
+        offsets = torch.tensor([1, 3, 4])
+    elif case == "offsets_end":
+        offsets = torch.tensor([0, 3])
+    elif case == "offsets_repeated":
+        offsets = torch.tensor([0, 0, 4])
+    elif case == "offsets_zero_groups":
+        offsets = torch.tensor([0])
+    elif case == "offsets_device":
+        offsets = torch.empty(3, dtype=torch.int64, device="meta")
+    with pytest.raises(error):
+        composition.group_loss_pri_none_from_fused(fused, available, labels, offsets, **kwargs)
+
+
+def test_local_reply_score_error_precedes_invalid_labels_and_loss_validation(monkeypatch):
+    fused, available, kwargs = _local_reply_inputs()
+    kwargs["user_embeddings"] = None
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("score must complete before any label/loss validation")
+
+    monkeypatch.setattr(composition, "positive_group_bce", forbidden)
+    with pytest.raises(TypeError, match="user_embeddings"):
+        composition.group_loss_pri_none_from_fused(fused, available, None, None, **kwargs)
+
+
+def test_local_reply_plain_placeholders_and_caller_ownership(monkeypatch):
+    fused, available, kwargs = _local_reply_inputs()
+    backing = torch.zeros((4, 6), dtype=torch.float64)
+    backing[:, ::2] = fused.detach()
+    fused = backing[:, ::2].requires_grad_()
+    kwargs["w_fused"] = torch.nn.Parameter(kwargs["w_fused"])
+    item_leaf = kwargs["item_embeddings"].detach().requires_grad_()
+    kwargs["item_embeddings"] = item_leaf * 1.25
+    kwargs["item_embeddings"].retain_grad()
+    assert not fused.is_contiguous() and not kwargs["item_embeddings"].is_leaf
+    inputs = [fused, *kwargs.values(), item_leaf]
+    for tensor in inputs:
+        tensor.grad = torch.full_like(tensor, 0.123)
+    before = [(tensor.detach().clone(), tensor.data_ptr(), tensor.untyped_storage().data_ptr(),
+               tensor._version, tensor.grad.clone(), tensor.grad.data_ptr()) for tensor in inputs]
+    mask_before = (available.clone(), available.data_ptr(), available._version)
+    rng_before = torch.random.get_rng_state().clone()
+    seen = []
+    original = composition.local_recommendation_logits
+
+    def observe(*args, **call_kwargs):
+        assert args[0] is kwargs["user_embeddings"] and args[1] is kwargs["item_embeddings"]
+        assert args[2] is fused and args[4] is kwargs["w_fused"]
+        assert args[6] is kwargs["score_weight"] and args[7] is kwargs["score_bias"]
+        assert call_kwargs["fused_available"] is available
+        seen.append((args[3], args[5], call_kwargs["private_available"]))
+        return original(*args, **call_kwargs)
+
+    def forbidden_fusion(*args, **call_kwargs):
+        raise AssertionError("local reply seam must not execute center fusion")
+
+    monkeypatch.setattr(composition, "local_recommendation_logits", observe)
+    monkeypatch.setattr(composition, "center_fusion", forbidden_fusion)
+    loss, logits = composition.group_loss_pri_none_from_fused(
+        fused, available, torch.tensor(LOCAL_REPLY_FIXTURE["labels"], dtype=torch.float64),
+        torch.tensor(LOCAL_REPLY_FIXTURE["group_offsets"]), **kwargs)
+    assert loss.requires_grad and logits.requires_grad and len(seen) == 1
+    assert [tensor.shape for tensor in seen[0]] == [(4, 1), (2, 1), (4,)]
+    for tensor in seen[0]:
+        assert type(tensor) is torch.Tensor and not tensor.requires_grad
+        assert tensor.device.type == "cpu" and torch.count_nonzero(tensor) == 0
+    assert seen[0][0].dtype == seen[0][1].dtype == torch.float64
+    assert seen[0][2].dtype == torch.bool
+    for tensor, snapshot in zip(inputs, before):
+        value, pointer, storage_pointer, version, gradient, gradient_pointer = snapshot
+        assert torch.equal(tensor.detach(), value)
+        assert tensor.data_ptr() == pointer and tensor.untyped_storage().data_ptr() == storage_pointer
+        assert tensor._version == version
+        assert torch.equal(tensor.grad, gradient) and tensor.grad.data_ptr() == gradient_pointer
+    assert torch.equal(available, mask_before[0])
+    assert available.data_ptr() == mask_before[1] and available._version == mask_before[2]
+    assert torch.equal(torch.random.get_rng_state(), rng_before)
+    fused_gradient, item_gradient = torch.autograd.grad(loss, (fused, item_leaf))
+    assert torch.count_nonzero(fused_gradient) > 0 and torch.count_nonzero(item_gradient) > 0
+
+
+def test_local_reply_fixed_public_signatures():
+    keyword_names = ["user_embeddings", "item_embeddings", "w_fused", "score_weight", "score_bias"]
+    for function, positional_names in (
+        (composition.score_pri_none_from_fused, ["fused_features", "fused_available"]),
+        (composition.group_loss_pri_none_from_fused,
+         ["fused_features", "fused_available", "labels", "group_offsets"]),
+    ):
+        signature = inspect.signature(function)
+        assert list(signature.parameters) == positional_names + keyword_names
+        for index, parameter in enumerate(signature.parameters.values()):
+            expected_kind = (inspect.Parameter.POSITIONAL_OR_KEYWORD if index < len(positional_names)
+                             else inspect.Parameter.KEYWORD_ONLY)
+            assert parameter.kind is expected_kind and parameter.default is inspect.Parameter.empty
+
+
+def test_local_reply_same_run_source_and_collection_evidence(request, record_property):
+    worktree = Path(__file__).resolve().parents[1]
+    origins = {}
+    for name in ("composition", "binary_fields", "encoders", "fusion", "recommendation"):
+        module = sys.modules[f"src.methods.doi4.{name}"]
+        source = Path(module.__file__)
+        resolved = source.resolve()
+        assert resolved == worktree / "src" / "methods" / "doi4" / f"{name}.py"
+        origins[name] = {"file": str(source), "resolved": str(resolved)}
+    nodeids = [item.nodeid for item in request.session.items]
+    assert nodeids and len(nodeids) == len(set(nodeids))
+    assert all(nodeid.startswith("tests/test_doi4_composition.py::") for nodeid in nodeids)
+    record_property("same_run_project_origins", json.dumps(origins, sort_keys=True))
+    record_property("same_run_collection_nodeids", json.dumps(nodeids))
+    record_property("same_run_collection_count", len(nodeids))
+    record_property("same_run_python_executable", sys.executable)

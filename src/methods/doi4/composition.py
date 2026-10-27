@@ -161,3 +161,129 @@ def _validate_score_inputs(
     ):
         if tensor.shape != shape:
             raise ValueError(f"{name} must have shape {shape}")
+
+
+def score_pri_none_from_fused(
+    fused_features: torch.Tensor,
+    fused_available: torch.Tensor,
+    *,
+    user_embeddings: torch.Tensor,
+    item_embeddings: torch.Tensor,
+    w_fused: torch.Tensor,
+    score_weight: torch.Tensor,
+    score_bias: torch.Tensor,
+) -> torch.Tensor:
+    """Score caller-owned fused replies without running fusion again.
+
+    Return raw logits[E] using users/items[E,d], fused[E,h], W[d,h],
+    weight[d], scalar bias and explicit Boolean availability[E]. Validate
+    every input before allocating ordinary non-grad private-width-one zeros,
+    then delegate to the accepted scorer. No parameters, RNG, graph detach,
+    backward, weighting or cross-call state are introduced.
+    """
+    _validate_fused_score_inputs(
+        user_embeddings, item_embeddings, fused_features, w_fused,
+        score_weight, score_bias, fused_available,
+    )
+    entities, item_dim = user_embeddings.shape
+    private_features = torch.zeros(
+        (entities, 1), dtype=user_embeddings.dtype, device=user_embeddings.device,
+    )
+    w_private = torch.zeros(
+        (item_dim, 1), dtype=user_embeddings.dtype, device=user_embeddings.device,
+    )
+    private_available = torch.zeros(
+        (entities,), dtype=torch.bool, device=user_embeddings.device,
+    )
+    return local_recommendation_logits(
+        user_embeddings, item_embeddings, fused_features, private_features,
+        w_fused, w_private, score_weight, score_bias,
+        fused_available=fused_available, private_available=private_available,
+    )
+
+
+def group_loss_pri_none_from_fused(
+    fused_features: torch.Tensor,
+    fused_available: torch.Tensor,
+    labels: torch.Tensor,
+    group_offsets: torch.Tensor,
+    *,
+    user_embeddings: torch.Tensor,
+    item_embeddings: torch.Tensor,
+    w_fused: torch.Tensor,
+    score_weight: torch.Tensor,
+    score_bias: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return (unweighted positive-group BCE, logits), preserving caller graphs.
+
+    Scoring completes before the accepted loss validates labels/offsets.
+    The caller owns z/g_z and any public m/N factor, applied exactly once
+    outside this composition; no sampling, reordering or VJP is performed.
+    """
+    logits = score_pri_none_from_fused(
+        fused_features, fused_available,
+        user_embeddings=user_embeddings, item_embeddings=item_embeddings,
+        w_fused=w_fused, score_weight=score_weight, score_bias=score_bias,
+    )
+    loss = positive_group_bce(logits, labels, group_offsets)
+    return loss, logits
+
+
+def _validate_fused_score_inputs(
+    users: torch.Tensor,
+    items: torch.Tensor,
+    fused: torch.Tensor,
+    w_fused: torch.Tensor,
+    score_weight: torch.Tensor,
+    score_bias: torch.Tensor,
+    fused_available: torch.Tensor,
+) -> None:
+    """Validate external z in the new entry's fixed order before allocation."""
+    floats = (
+        ("user_embeddings", users, 2),
+        ("item_embeddings", items, 2),
+        ("fused_features", fused, 2),
+        ("w_fused", w_fused, 2),
+        ("score_weight", score_weight, 1),
+        ("score_bias", score_bias, 0),
+    )
+    for name, tensor, rank in floats:
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError(f"{name} must be a torch.Tensor")
+        if tensor.is_nested or tensor.layout != torch.strided:
+            raise TypeError(f"{name} must be a dense strided tensor")
+        if tensor.device.type != "cpu":
+            raise ValueError(f"{name} must be on CPU")
+        if tensor.ndim != rank:
+            raise ValueError(f"{name} must have rank {rank}")
+    for name, tensor, _ in floats:
+        if tensor.dtype not in (torch.float32, torch.float64):
+            raise TypeError(f"{name} must have dtype float32 or float64")
+        if tensor.dtype != users.dtype:
+            raise TypeError(f"{name} must have the same dtype as user_embeddings")
+        if not bool(torch.isfinite(tensor).all()):
+            raise ValueError(f"{name} must be finite")
+    entities, item_dim = users.shape
+    fused_dim = fused.shape[1]
+    if min(item_dim, fused_dim) <= 0:
+        raise ValueError("d and h must be positive")
+    for name, tensor, shape in (
+        ("item_embeddings", items, (entities, item_dim)),
+        ("fused_features", fused, (entities, fused_dim)),
+        ("w_fused", w_fused, (item_dim, fused_dim)),
+        ("score_weight", score_weight, (item_dim,)),
+    ):
+        if tensor.shape != shape:
+            raise ValueError(f"{name} must have shape {shape}")
+    if not isinstance(fused_available, torch.Tensor):
+        raise TypeError("fused_available must be a torch.Tensor")
+    if fused_available.is_nested or fused_available.layout != torch.strided:
+        raise TypeError("fused_available must be a dense strided tensor")
+    if fused_available.device.type != "cpu":
+        raise ValueError("fused_available must be on CPU")
+    if fused_available.ndim != 1:
+        raise ValueError("fused_available must have rank 1")
+    if fused_available.dtype != torch.bool:
+        raise TypeError("fused_available must have Boolean dtype")
+    if fused_available.shape != (entities,):
+        raise ValueError("fused_available must have shape [E]")
