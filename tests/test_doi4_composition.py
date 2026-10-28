@@ -1178,9 +1178,15 @@ def test_local_reply_same_run_source_and_collection_evidence(request, record_pro
         assert resolved == worktree / "src" / "methods" / "doi4" / f"{name}.py"
         origins[name] = {"file": str(source), "resolved": str(resolved)}
     nodeids = [item.nodeid for item in request.session.items]
-    assert nodeids and len(nodeids) == len(set(nodeids))
-    assert all(nodeid.startswith("tests/test_doi4_composition.py::") for nodeid in nodeids)
+    assert nodeids and all(nodeids) and len(nodeids) == len(set(nodeids))
+    # Session evidence stays complete when pytest also selects other modules.
+    module_path = request.node.nodeid.partition("::")[0]
+    module_nodeids = [nodeid for nodeid in nodeids if nodeid.startswith(module_path + "::")]
+    assert module_nodeids and len(module_nodeids) == len(set(module_nodeids))
+    assert request.node.nodeid in module_nodeids
     record_property("same_run_project_origins", json.dumps(origins, sort_keys=True))
     record_property("same_run_collection_nodeids", json.dumps(nodeids))
     record_property("same_run_collection_count", len(nodeids))
     record_property("same_run_python_executable", sys.executable)
+    record_property("same_run_module_collection_nodeids", json.dumps(module_nodeids))
+    record_property("same_run_module_collection_count", len(module_nodeids))
